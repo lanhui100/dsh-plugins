@@ -21,22 +21,25 @@ export { RemoteSshService, mountRemoteSshService, type RemoteSessionListValue } 
 export function apply(ctx: Context, config: Config): void {
   const tunnel = new SshTunnel({ host: config.host, remotePort: config.remotePort, localPort: config.localPort })
   const caller = new RemoteCaller({ host: config.host, baseUrl: tunnel.baseUrl() })
-  const service = mountRemoteSshService(ctx)
-  ctx.effect(() => {
-    let stopped = false
-    void (async () => {
-      try {
-        await tunnel.start()
-        if (stopped) return
-        service.setCaller(caller)
-        ctx.logger?.info?.(`remote-ssh: tunnel ready (${config.host} -> ${tunnel.baseUrl()})`)
-      } catch (error) {
-        ctx.logger?.warn?.(`remote-ssh: tunnel failed: ${error instanceof Error ? error.message : String(error)}`)
+  mountRemoteSshService(ctx)
+  ctx.inject(['remoteSsh'], (scoped) => {
+    const service = scoped.remoteSsh
+    scoped.effect(() => {
+      let stopped = false
+      void (async () => {
+        try {
+          await tunnel.start()
+          if (stopped) return
+          service.setCaller(caller)
+          scoped.logger?.info?.(`remote-ssh: tunnel ready (${config.host} -> ${tunnel.baseUrl()})`)
+        } catch (error) {
+          scoped.logger?.warn?.(`remote-ssh: tunnel failed: ${error instanceof Error ? error.message : String(error)}`)
+        }
+      })()
+      return () => {
+        stopped = true
+        void tunnel.dispose()
       }
-    })()
-    return () => {
-      stopped = true
-      void tunnel.dispose()
-    }
+    })
   })
 }

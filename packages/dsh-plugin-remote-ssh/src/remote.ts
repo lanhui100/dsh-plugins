@@ -36,7 +36,8 @@ function runSsh(host: string, args: string[]): Promise<string> {
  * The token is process-scoped and rotates on every remote restart.
  */
 export async function readLaunchToken(host: string, logPath: string = DEFAULT_LOG_PATH): Promise<string> {
-  const output = await runSsh(host, [`grep -o "?token=[A-Za-z0-9_-]*" ${logPath} | head -1`])
+  const script = `grep -o "?token=[A-Za-z0-9_-]*" ${logPath} | head -1`
+  const output = await runSsh(host, ['sh', '-c', script])
   const match = TOKEN_PATTERN.exec(output.trim())
   if (match?.[1] === undefined) {
     throw new Error('remote-ssh: no launch token found in remote dsh web log')

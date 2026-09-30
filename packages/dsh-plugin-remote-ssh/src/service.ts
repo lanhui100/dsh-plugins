@@ -53,16 +53,10 @@ export class RemoteSshService extends TypertRemoteService {
 
 /**
  * Mount the `remoteSsh` Typert remote on the plugin context.
- * Registration also publishes the service, so the instance is read back
- * through the context for later caller attachment.
+ * The service instance becomes available through `ctx.inject(['remoteSsh'])`
+ * once the fiber settles; callers needing it synchronously should use inject.
  * @param ctx - plugin context owning the mount.
- * @returns the mounted service for later caller attachment.
  */
-export function mountRemoteSshService(ctx: Context): RemoteSshService {
+export function mountRemoteSshService(ctx: Context): void {
   ctx.plugin(RemoteSshService)
-  const service = ctx.get('remoteSsh')
-  if (service === undefined) {
-    throw new Error('remote-ssh: remoteSsh service missing right after mount')
-  }
-  return service
 }
