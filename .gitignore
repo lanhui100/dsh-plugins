@@ -4,6 +4,6 @@
 Thumbs.db
 *~
 # 构建产物/依赖目录：
-node_modules/   # Node
-packages/*/lib/  # TS 构建产物
+node_modules/
 packages/*/lib/
+*.tsbuildinfo
