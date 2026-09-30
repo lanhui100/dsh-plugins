@@ -12,11 +12,13 @@
 
 ## semantics
 
-- 本地 Host 端持有 `ssh -L <localPort>:127.0.0.1:<remotePort> <host>` 隧道子进程，负责保活与断线重连。
-- 经隧道直调远端 `/api`（server-side 路径）；浏览器 cookie 鉴权因 authority 绑定不可复用（见 `.agents/notes/proposed/architecture/2026-09-30-self-built-tunnel-and-server-side-api.md`）。
-- Client 端在 sidebar 注入远端连接状态与工作区/会话视图（`sidebar.footer.action` 起步）。
+- 本地 Host 端持有 `ssh -N -o ExitOnForwardFailure=yes -o BatchMode=yes -L <localPort>:127.0.0.1:<remotePort> <host>` 隧道子进程，负责就绪探测、保活与指数退避重连。
+- 自动经 SSH 读取远端 `dsh web` 启动日志的 `?token=`，经隧道 `GET /?token=...` 换取 authority 绑定的会话 Cookie，并在 401 时自动重新换取。
+- 经隧道调用远端 `/api/session/list`（携带换取的 Cookie 与 `_request` 参数信封），拉取远端全部会话（包括标题、运行状态、工作目录 cwd）。
+- Host 端挂载 `RemoteSshService`（Typert Remote）暴露 `listSessions` 接口，并向 Host 命令系统注册 `/remote-ssh` 人令（在对话输入框中输入即可列出远端会话）。
+- Client 端在 `sidebar.footer.action` 注入远程主机状态按钮（指示灯 + 主机标签），支持点击交互。
 
 ## limitations
 
-- 远端 `/api` 的 server-side 身份尚待实测定案（候选：profile credential / launch token / loopback 代理）。
-- 仅支持密钥认证的 OpenSSH 主机；Windows 本地隧道子进程管理自建。
+- 仅支持通过 OpenSSH 密钥免密登录的主机配置（如 `~/.ssh/config` 中的 `Host dev`）。
+- 远端 DSH 需要启动为 `dsh web` 模式并保留日志（默认 `/tmp/dsh-web.log`）。
