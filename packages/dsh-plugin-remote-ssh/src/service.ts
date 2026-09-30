@@ -1,4 +1,4 @@
-/** Host Remote exposing remote-session reads to the Client half. */
+/** Host Remote exposing remote-session reads to the Client half (optional Typert mount). */
 
 import type { Context } from '@deepseek-ai/cordis'
 import { Remote, TypertRemoteService } from '@deepseek-ai/dsh-typert-protocol'
@@ -12,7 +12,7 @@ export interface RemoteSessionListValue {
 
 declare module '@deepseek-ai/cordis' {
   interface Context {
-    remoteSsh: RemoteSshService
+    remoteSsh?: RemoteSshService
   }
 }
 
@@ -52,11 +52,24 @@ export class RemoteSshService extends TypertRemoteService {
 }
 
 /**
- * Mount the `remoteSsh` Typert remote on the plugin context.
- * The service instance becomes available through `ctx.inject(['remoteSsh'])`
- * once the fiber settles; callers needing it synchronously should use inject.
+ * Best-effort Typert Remote mount. The plugin's core value (the `/remote-ssh`
+ * command and the SSH tunnel) does not depend on this mount: a cross-instance
+ * cordis/typert mismatch (plugin-local copy vs host runtime copy) must degrade
+ * to a warning instead of breaking apply. Returns the mounted service when
+ * available, `undefined` when Typert/Cordis cannot share their instances.
  * @param ctx - plugin context owning the mount.
  */
-export function mountRemoteSshService(ctx: Context): void {
-  ctx.plugin(RemoteSshService)
+export function tryMountRemoteSshService(ctx: Context): RemoteSshService | undefined {
+  try {
+    ctx.plugin(RemoteSshService)
+    const service = (ctx as { get?: (name: string) => unknown }).get?.('remoteSsh') as
+      | RemoteSshService
+      | undefined
+    return service
+  } catch (error) {
+    ctx.logger?.warn?.(
+      `remote-ssh: Typert Remote mount skipped (cross-instance cordis/typert): ${error instanceof Error ? error.message : String(error)}`,
+    )
+    return undefined
+  }
 }
