@@ -1,7 +1,8 @@
 /** Host Remote exposing remote-session reads to the Client half. */
 
 import type { Context } from '@deepseek-ai/cordis'
-import { RemoteCaller } from './remote.ts'
+import { Remote, TypertRemoteService } from '@deepseek-ai/dsh-typert-protocol'
+import type { RemoteCaller } from './remote.ts'
 import { listRemoteSessions, type RemoteSessionItem } from './sessions.ts'
 
 export interface RemoteSessionListValue {
@@ -9,17 +10,59 @@ export interface RemoteSessionListValue {
   readonly error?: string
 }
 
-/**
- * Mount remote-session reads for the Client half.
- * The Client calls through its own `ctx.remote` binding once the service
- * is registered here; Typert gateway wiring is resolved at bundle level.
- * @param ctx - plugin context owning the mount.
- * @param caller - authenticated tunnel caller.
- */
-export function mountRemoteSshService(ctx: Context, caller: RemoteCaller): void {
-  void ctx
-  void caller
-  void listRemoteSessions
+declare module '@deepseek-ai/cordis' {
+  interface Context {
+    remoteSsh: RemoteSshService
+  }
 }
 
-export { RemoteCaller }
+/**
+ * Host Remote through which the Client half reads remote sessions.
+ * The tunnel caller is injected after construction (tunnel readiness is
+ * asynchronous while service construction is synchronous).
+ */
+export class RemoteSshService extends TypertRemoteService {
+  private caller: RemoteCaller | undefined
+
+  constructor(ctx: Context) {
+    super(ctx, 'remoteSsh')
+  }
+
+  /** Attach the authenticated tunnel caller once the tunnel is ready. */
+  setCaller(caller: RemoteCaller): void {
+    this.caller = caller
+  }
+
+  /**
+   * List visible sessions on the remote DSH without resuming any Agent.
+   * @returns remote session summaries, or an error value when the tunnel or remote is down.
+   */
+  @Remote('listSessions')
+  async listSessions(): Promise<RemoteSessionListValue> {
+    const caller = this.caller
+    if (caller === undefined) {
+      return { items: [], error: 'tunnel-not-ready' }
+    }
+    try {
+      return { items: await listRemoteSessions(caller) }
+    } catch (error) {
+      return { items: [], error: error instanceof Error ? error.message : String(error) }
+    }
+  }
+}
+
+/**
+ * Mount the `remoteSsh` Typert remote on the plugin context.
+ * Registration also publishes the service, so the instance is read back
+ * through the context for later caller attachment.
+ * @param ctx - plugin context owning the mount.
+ * @returns the mounted service for later caller attachment.
+ */
+export function mountRemoteSshService(ctx: Context): RemoteSshService {
+  ctx.plugin(RemoteSshService)
+  const service = ctx.get('remoteSsh')
+  if (service === undefined) {
+    throw new Error('remote-ssh: remoteSsh service missing right after mount')
+  }
+  return service
+}

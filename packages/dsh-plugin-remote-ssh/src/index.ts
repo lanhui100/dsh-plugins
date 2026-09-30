@@ -3,13 +3,14 @@
 import type { Context } from '@deepseek-ai/cordis'
 import { SshTunnel } from './tunnel.ts'
 import { RemoteCaller } from './remote.ts'
-import { listRemoteSessions } from './sessions.ts'
+import { mountRemoteSshService } from './service.ts'
 import type { Config } from './config.ts'
 
 export { Config } from './config.ts'
 export { SshTunnel } from './tunnel.ts'
 export { RemoteCaller, RemoteAuthError, readLaunchToken } from './remote.ts'
 export { listRemoteSessions, type RemoteSessionItem } from './sessions.ts'
+export { RemoteSshService, mountRemoteSshService, type RemoteSessionListValue } from './service.ts'
 
 /**
  * Activate the Host half: hold the SSH tunnel for the configured remote and
@@ -20,12 +21,15 @@ export { listRemoteSessions, type RemoteSessionItem } from './sessions.ts'
 export function apply(ctx: Context, config: Config): void {
   const tunnel = new SshTunnel({ host: config.host, remotePort: config.remotePort, localPort: config.localPort })
   const caller = new RemoteCaller({ host: config.host, baseUrl: tunnel.baseUrl() })
+  const service = mountRemoteSshService(ctx)
   ctx.effect(() => {
     let stopped = false
     void (async () => {
       try {
         await tunnel.start()
-        if (!stopped) ctx.logger?.info?.(`remote-ssh: tunnel ready (${config.host} -> ${tunnel.baseUrl()})`)
+        if (stopped) return
+        service.setCaller(caller)
+        ctx.logger?.info?.(`remote-ssh: tunnel ready (${config.host} -> ${tunnel.baseUrl()})`)
       } catch (error) {
         ctx.logger?.warn?.(`remote-ssh: tunnel failed: ${error instanceof Error ? error.message : String(error)}`)
       }
@@ -35,6 +39,4 @@ export function apply(ctx: Context, config: Config): void {
       void tunnel.dispose()
     }
   })
-  void caller
-  void listRemoteSessions
 }
