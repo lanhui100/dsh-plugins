@@ -4,6 +4,7 @@ import type { Context } from '@deepseek-ai/cordis'
 import { SshTunnel } from './tunnel.ts'
 import { RemoteCaller } from './remote.ts'
 import { mountRemoteSshService } from './service.ts'
+import { registerRemoteSshCommand } from './command.ts'
 import type { Config } from './config.ts'
 
 export { Config } from './config.ts'
@@ -11,6 +12,7 @@ export { SshTunnel } from './tunnel.ts'
 export { RemoteCaller, RemoteAuthError, readLaunchToken } from './remote.ts'
 export { listRemoteSessions, type RemoteSessionItem } from './sessions.ts'
 export { RemoteSshService, mountRemoteSshService, type RemoteSessionListValue } from './service.ts'
+export { registerRemoteSshCommand } from './command.ts'
 
 /**
  * Activate the Host half: hold the SSH tunnel for the configured remote and
@@ -21,7 +23,9 @@ export { RemoteSshService, mountRemoteSshService, type RemoteSessionListValue } 
 export function apply(ctx: Context, config: Config): void {
   const tunnel = new SshTunnel({ host: config.host, remotePort: config.remotePort, localPort: config.localPort })
   const caller = new RemoteCaller({ host: config.host, baseUrl: tunnel.baseUrl() })
+  let callerReady: RemoteCaller | undefined
   mountRemoteSshService(ctx)
+  registerRemoteSshCommand(ctx, () => callerReady)
   ctx.inject(['remoteSsh'], (scoped) => {
     const service = scoped.remoteSsh
     scoped.effect(() => {
@@ -30,6 +34,7 @@ export function apply(ctx: Context, config: Config): void {
         try {
           await tunnel.start()
           if (stopped) return
+          callerReady = caller
           service.setCaller(caller)
           scoped.logger?.info?.(`remote-ssh: tunnel ready (${config.host} -> ${tunnel.baseUrl()})`)
         } catch (error) {

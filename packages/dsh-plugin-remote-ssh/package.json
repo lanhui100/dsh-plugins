@@ -4,15 +4,15 @@
   "description": "DeepSeek Harness plugin: aggregate a remote DSH instance (workspaces and sessions) over an SSH tunnel",
   "type": "module",
   "main": "lib/index.js",
-  "types": "lib/types/index.d.ts",
+  "types": "lib/index.d.ts",
   "exports": {
     ".": {
-      "types": "./lib/types/index.d.ts",
+      "types": "./lib/index.d.ts",
       "default": "./lib/index.js"
     },
     "./client": {
-      "types": "./lib/types/client/index.d.ts",
-      "default": "./lib/client.js"
+      "types": "./lib/client/index.d.ts",
+      "default": "./lib/client/index.js"
     },
     "./package.json": "./package.json"
   },
@@ -34,6 +34,7 @@
   "devDependencies": {
     "@deepseek-ai/cordis": "~4.0.4",
     "@types/node": "^22.0.0",
+    "@types/react": "^18.3.31",
     "typescript": "^5.9.0"
   },
   "dependencies": {

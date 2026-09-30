@@ -20,9 +20,12 @@ interface RpcEnvelope {
   readonly result?: { readonly ok: boolean; readonly value?: unknown; readonly error?: { readonly code: string; readonly message: string } }
 }
 
-function runSsh(host: string, args: string[]): Promise<string> {
+function runSsh(host: string, remoteScript: string): Promise<string> {
+  // Single-arg form: ssh joins the trailing args into one remote command
+  // string that the far-side shell parses (pipes included). Splitting into
+  // ['sh', '-c', script] breaks this: the pipe would bind outside -c.
   return new Promise((resolve, reject) => {
-    execFile('ssh', ['-o', 'BatchMode=yes', '-o', 'ConnectTimeout=15', host, ...args], {
+    execFile('ssh', ['-o', 'BatchMode=yes', '-o', 'ConnectTimeout=15', host, remoteScript], {
       maxBuffer: 64 * 1024, timeout: 60_000,
     }, (error, stdout) => {
       if (error !== null) reject(error)
@@ -37,7 +40,7 @@ function runSsh(host: string, args: string[]): Promise<string> {
  */
 export async function readLaunchToken(host: string, logPath: string = DEFAULT_LOG_PATH): Promise<string> {
   const script = `grep -o "?token=[A-Za-z0-9_-]*" ${logPath} | head -1`
-  const output = await runSsh(host, ['sh', '-c', script])
+  const output = await runSsh(host, script)
   const match = TOKEN_PATTERN.exec(output.trim())
   if (match?.[1] === undefined) {
     throw new Error('remote-ssh: no launch token found in remote dsh web log')
