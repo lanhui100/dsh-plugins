@@ -33,8 +33,5 @@
     "@types/node": "^22.0.0",
     "@types/react": "^18.3.31",
     "typescript": "^5.9.0"
-  },
-  "dependencies": {
-    "@deepseek-ai/dsh-typert-protocol": "0.2.0-rc.2"
   }
 }

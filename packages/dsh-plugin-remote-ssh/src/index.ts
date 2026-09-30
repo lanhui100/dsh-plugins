@@ -1,9 +1,8 @@
-/** Host half of dsh-plugin-remote-ssh: SSH tunnel lifecycle and remote DSH API proxy. */
+/** Host half of dsh-plugin-remote-ssh: SSH tunnel lifecycle and the /remote-ssh command. */
 
 import type { Context } from '@deepseek-ai/cordis'
 import { SshTunnel } from './tunnel.ts'
 import { RemoteCaller } from './remote.ts'
-import { tryMountRemoteSshService } from './service.ts'
 import { registerRemoteSshCommand } from './command.ts'
 import type { Config } from './config.ts'
 
@@ -11,12 +10,20 @@ export { Config } from './config.ts'
 export { SshTunnel } from './tunnel.ts'
 export { RemoteCaller, RemoteAuthError, readLaunchToken } from './remote.ts'
 export { listRemoteSessions, type RemoteSessionItem } from './sessions.ts'
-export { RemoteSshService, tryMountRemoteSshService, type RemoteSessionListValue } from './service.ts'
 export { registerRemoteSshCommand } from './command.ts'
 
 /**
+ * Services this entry needs before `apply` runs.
+ * Cordis resolves `inject` before activation, so `ctx.commands` is a real
+ * service here. Without this declaration the accessor throws, the entry never
+ * activates, and on the desktop that also costs the user's patch layer.
+ */
+export const inject = ['commands']
+
+/**
  * Activate the Host half: hold the SSH tunnel for the configured remote and
- * register the `/remote-ssh` command. The Typert Remote mount is best-effort.
+ * register `/remote-ssh`. Both are self-contained — no Typert Remote — so the
+ * entry cannot fail on a cross-instance cordis/typert mismatch.
  * @param ctx - plugin context this entry is mounted in.
  * @param config - validated plugin configuration (SSH target and remote port).
  */
@@ -25,11 +32,7 @@ export function apply(ctx: Context, config: Config): void {
   const caller = new RemoteCaller({ host: config.host, baseUrl: tunnel.baseUrl() })
   let callerReady: RemoteCaller | undefined
 
-  // Core path: the command works regardless of Typert/cordis instance sharing.
   registerRemoteSshCommand(ctx, () => callerReady)
-
-  // Optional path: Typert Remote for the Client half. Degrades to a warning.
-  const service = tryMountRemoteSshService(ctx)
 
   ctx.effect(() => {
     let stopped = false
@@ -38,7 +41,6 @@ export function apply(ctx: Context, config: Config): void {
         await tunnel.start()
         if (stopped) return
         callerReady = caller
-        service?.setCaller(caller)
         ctx.logger?.info?.(`remote-ssh: tunnel ready (${config.host} -> ${tunnel.baseUrl()})`)
       } catch (error) {
         ctx.logger?.warn?.(`remote-ssh: tunnel failed: ${error instanceof Error ? error.message : String(error)}`)

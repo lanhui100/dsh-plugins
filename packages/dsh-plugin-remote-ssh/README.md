@@ -15,8 +15,8 @@
 - 本地 Host 端持有 `ssh -N -o ExitOnForwardFailure=yes -o BatchMode=yes -L <localPort>:127.0.0.1:<remotePort> <host>` 隧道子进程，负责就绪探测、保活与指数退避重连。
 - 自动经 SSH 读取远端 `dsh web` 启动日志的 `?token=`，经隧道 `GET /?token=...` 换取 authority 绑定的会话 Cookie，并在 401 时自动重新换取。
 - 经隧道调用远端 `/api/session/list`（携带换取的 Cookie 与 `_request` 参数信封），拉取远端全部会话（包括标题、运行状态、工作目录 cwd）。
-- Host 端按需挂载 `RemoteSshService`（Typert Remote）暴露 `listSessions`；跨 cordis 实例时该挂载降级为警告，不影响命令与隧道。
-- Host 端注册 `/remote-ssh` 人令（在对话输入框输入即可列出远端会话），这是不依赖 Typert 的核心路径。
+- Host 入口声明 `inject = ['commands']`（Cordis 在激活前解析服务；缺声明会让 `ctx.commands` 访问抛错、条目永不激活，在桌面还会连带清空用户 patch 层）。
+- Host 端注册 `/remote-ssh` 人令（在对话输入框输入即可列出远端会话）。
 
 ## 产物与构建
 
@@ -31,7 +31,9 @@
 
 ## 桌面 profile 装配
 
-在 `$DSH_HOME/profiles/<name>/cordis.patch.yml` 末尾追加（必须是 `- insert:`，写成顶层 `- id:` 会被静默跳过）：
+**装到 home 层**，不要装到 profile 层：桌面应用会按自己的设置库重写 `profiles/<name>/cordis.patch.yml`，手写行随时可能被抹掉；`$DSH_HOME/cordis.patch.yml` 是独立的用户层（组合顺序：bundle → profile → home → `--patch`），应用不写它。
+
+在 `$DSH_HOME/cordis.patch.yml` 写入（必须是 `- insert:`，写成顶层 `- id:` 会被静默跳过）：
 
 ```yaml
 - insert:

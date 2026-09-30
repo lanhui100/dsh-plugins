@@ -14,8 +14,7 @@
   - SSH 隧道自动维护与重连 (`tunnel.ts`)
   - 远端进程 Token 读取与 authority 绑定 Cookie 自动置换 (`remote.ts`)
   - 远端 `/api/session/list` 会话聚合与模型投影提取 (`sessions.ts`)
-  - Host 端 Typert 远程服务 `RemoteSshService`（跨实例时降级为警告）(`service.ts`)
-  - 对话输入框 `/remote-ssh` 人类命令 (`command.ts`)
+  - 对话输入框 `/remote-ssh` 人类命令（`inject = ['commands']`）(`command.ts`)
   - Client 侧边栏底部状态按钮：DSH 闭包工厂产物 (`client.js`，手工维护；`src/client/index.ts` 为类型真源)
 
 ## 快速开始与验证
@@ -26,7 +25,7 @@
    node packages/dsh-plugin-remote-ssh/smoke-client-bundle.mjs   # Client 半契约
    node packages/dsh-plugin-remote-ssh/smoke-command-live.mjs    # 隧道 + /remote-ssh 端到端
    ```
-2. 本地 Desktop 挂载：在 `$DSH_HOME/profiles/desktop/cordis.patch.yml` 末尾追加（**必须 `- insert:`**，顶层 `- id:` 会被静默跳过）：
+2. 本地 Desktop 挂载：写入 **home 层** `$DSH_HOME/cordis.patch.yml`（**不要写 profile 层**——桌面应用会按自己的设置库重写 `profiles/<name>/cordis.patch.yml`，手写行会被抹掉）。必须是 `- insert:`，顶层 `- id:` 会被静默跳过：
    ```yaml
    - insert:
        - id: remote-ssh
