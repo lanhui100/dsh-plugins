@@ -29,9 +29,11 @@
     "typecheck": "tsc --noEmit -p tsconfig.json"
   },
   "peerDependencies": {
-    "@deepseek-ai/cordis": "workspace:~"
+    "@deepseek-ai/cordis": "~4.0.4"
   },
   "devDependencies": {
+    "@deepseek-ai/cordis": "~4.0.4",
+    "@types/node": "^22.0.0",
     "typescript": "^5.9.0"
   }
 }

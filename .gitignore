@@ -3,7 +3,7 @@
 .DS_Store
 Thumbs.db
 *~
-# 构建产物/依赖目录按栈补充，例如：
-# target/         # Rust
-# node_modules/   # Node
-# __pycache__/    # Python
+# 构建产物/依赖目录：
+node_modules/   # Node
+packages/*/lib/  # TS 构建产物
+packages/*/lib/
