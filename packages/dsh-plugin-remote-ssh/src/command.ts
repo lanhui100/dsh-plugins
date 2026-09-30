@@ -46,13 +46,14 @@ export function registerRemoteSshCommand(
       const caller = getCaller()
       if (caller === undefined) return { kind: 'error', text: 'Remote tunnel is not ready yet.' }
       try {
-        const items = await listRemoteSessions(caller)
+        const items = await listRemoteSessions(caller, invocation.signal)
         if (items.length === 0) return { kind: 'success', text: 'No remote sessions.' }
         const lines = items.slice(0, 30).map((item) =>
           `- ${item.sessionId} [${item.running ? 'running' : 'idle'}] ${item.title ?? '(untitled)'} (${item.cwd})`)
         const more = items.length > 30 ? `\n… and ${String(items.length - 30)} more` : ''
         return { kind: 'success', text: `Remote sessions (${String(items.length)}):\n${lines.join('\n')}${more}` }
       } catch (error) {
+        if (invocation.signal.aborted) return { kind: 'error', text: 'Remote-SSH listing cancelled.' }
         return { kind: 'error', text: `Remote listing failed: ${error instanceof Error ? error.message : String(error)}` }
       }
     },

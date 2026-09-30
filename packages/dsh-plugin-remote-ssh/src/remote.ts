@@ -9,6 +9,8 @@ export interface RemoteOptions {
   baseUrl: string
   /** Remote path of the dsh web log carrying the `?token=` URL. */
   logPath?: string
+  /** Deadline for one RPC/token-exchange attempt (ms). Defaults to 30 s. */
+  requestTimeoutMs?: number
 }
 
 const DEFAULT_LOG_PATH = '/tmp/dsh-web.log'
@@ -25,8 +27,8 @@ function runSsh(host: string, remoteScript: string): Promise<string> {
   // string that the far-side shell parses (pipes included). Splitting into
   // ['sh', '-c', script] breaks this: the pipe would bind outside -c.
   return new Promise((resolve, reject) => {
-    execFile('ssh', ['-o', 'BatchMode=yes', '-o', 'ConnectTimeout=15', host, remoteScript], {
-      maxBuffer: 64 * 1024, timeout: 60_000,
+    execFile('ssh', ['-o', 'BatchMode=yes', '-o', 'ConnectTimeout=10', host, remoteScript], {
+      maxBuffer: 64 * 1024, timeout: 20_000,
     }, (error, stdout) => {
       if (error !== null) reject(error)
       else resolve(stdout)
@@ -84,26 +86,47 @@ export class RemoteCaller {
 
   constructor(private readonly options: RemoteOptions) {}
 
+  private timeoutSignal(signal?: AbortSignal): AbortSignal {
+    const deadline = AbortSignal.timeout(this.options.requestTimeoutMs ?? 30_000)
+    return signal === undefined ? deadline : AbortSignal.any([signal, deadline])
+  }
+
+  /**
+   * Warm the session cookie ahead of any command: read the launch token and
+   * exchange it now, so the first user invocation skips the (slow) SSH +
+   * token round-trip. Idempotent; a failure only leaves the jar empty and the
+   * next invoke retries the exchange.
+   */
+  async warmup(): Promise<void> {
+    try {
+      await this.ensureCookie()
+    } catch (error) {
+      this.jar.clear()
+      throw error
+    }
+  }
+
   /**
    * Invoke one remote RPC endpoint, e.g. `session/list` with `{ _request: {} }`.
    * @param endpoint - canonical `<namespace>/<method>` endpoint.
    * @param args - plain-object args payload (exactly one `args` field on the wire).
+   * @param signal - optional caller cancellation (aborts fetch).
    * @returns the endpoint's success value, or throws its gateway error.
    */
-  async invoke<T>(endpoint: string, args: Record<string, unknown> = {}): Promise<T> {
+  async invoke<T>(endpoint: string, args: Record<string, unknown> = {}, signal?: AbortSignal): Promise<T> {
     try {
-      return await this.callOnce<T>(endpoint, args)
+      return await this.callOnce<T>(endpoint, args, signal)
     } catch (error) {
       if (error instanceof RemoteAuthError) {
         this.jar.clear()
         await this.ensureCookie()
-        return await this.callOnce<T>(endpoint, args)
+        return await this.callOnce<T>(endpoint, args, signal)
       }
       throw error
     }
   }
 
-  private async callOnce<T>(endpoint: string, args: Record<string, unknown>): Promise<T> {
+  private async callOnce<T>(endpoint: string, args: Record<string, unknown>, signal?: AbortSignal): Promise<T> {
     await this.ensureCookie()
     const rpcId = `remote-${Date.now().toString(36)}-${Math.floor(Math.random() * 0xffff).toString(16)}`
     const cookie = this.jar.header()
@@ -114,6 +137,7 @@ export class RemoteCaller {
         ...(cookie === undefined ? {} : { cookie }),
       },
       body: JSON.stringify({ type: 'client-request', rpcId, method: endpoint, payload: { args } }),
+      signal: this.timeoutSignal(signal),
     })
     if (response.status === 401) {
       throw new RemoteAuthError('remote-ssh: remote rejected the session cookie')
@@ -144,6 +168,7 @@ export class RemoteCaller {
     const response = await fetch(`${this.options.baseUrl}/?token=${token}`, {
       method: 'GET',
       redirect: 'manual',
+      signal: this.timeoutSignal(),
     })
     if (response.status !== 303 && response.status !== 302) {
       throw new RemoteAuthError(`remote-ssh: token exchange rejected (HTTP ${String(response.status)})`)

@@ -41,6 +41,12 @@ export function apply(ctx: Context, config: Config): void {
         await tunnel.start()
         if (stopped) return
         callerReady = caller
+        // Warm the session cookie now so the first /remote-ssh skips the slow
+        // SSH + token round-trip; a failure only leaves the jar empty (the
+        // next invoke re-exchanges) and never fails the entry.
+        void caller.warmup().catch((error: unknown) => {
+          ctx.logger?.warn?.(`remote-ssh: cookie warmup failed: ${error instanceof Error ? error.message : String(error)}`)
+        })
         ctx.logger?.info?.(`remote-ssh: tunnel ready (${config.host} -> ${tunnel.baseUrl()})`)
       } catch (error) {
         ctx.logger?.warn?.(`remote-ssh: tunnel failed: ${error instanceof Error ? error.message : String(error)}`)

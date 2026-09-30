@@ -18,10 +18,14 @@ interface SessionListValue {
 /**
  * List visible sessions on the remote DSH without resuming any Agent.
  * @param caller - authenticated tunnel caller.
+ * @param signal - optional cancellation passed through to the RPC fetch.
  * @returns remote session summaries ordered by activity.
  */
-export async function listRemoteSessions(caller: RemoteCaller): Promise<readonly RemoteSessionItem[]> {
-  const value = await caller.invoke<SessionListValue>('session/list', { _request: {} })
+export async function listRemoteSessions(
+  caller: RemoteCaller,
+  signal?: AbortSignal,
+): Promise<readonly RemoteSessionItem[]> {
+  const value = await caller.invoke<SessionListValue>('session/list', { _request: {} }, signal)
   const items = value?.items
   if (!Array.isArray(items)) {
     throw new Error('remote-ssh: remote session/list returned no items array')
