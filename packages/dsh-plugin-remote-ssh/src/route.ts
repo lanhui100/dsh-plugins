@@ -77,12 +77,26 @@ export function registerRemoteSshRoute(
           return
         }
         try {
-          const items = await listRemoteSessions(caller)
+          const [items, baseline] = await Promise.all([
+            listRemoteSessions(caller),
+            caller.fetchWorkspaceBaseline().catch((err) => {
+              console.warn('remote-ssh: failed to fetch workspace baseline, falling back to all sessions:', err)
+              return undefined
+            }),
+          ])
+          const validMap = baseline !== undefined
+            ? new Map(baseline.items.map((it) => [it.path, { workspaceId: it.workspaceId, title: it.title }]))
+            : undefined
+          const workspaces = groupSessionsByWorkspace(items, 50, validMap)
+          const archivedSessionIds = baseline?.archivedSessionIds ?? []
+          const pinnedSessionIds = baseline?.pinnedSessionIds ?? []
           const source = projectRemoteSourceSnapshot(hostLabel, items)
           sendJson(res, 200, {
             host: hostLabel,
             total: items.length,
-            workspaces: groupSessionsByWorkspace(items),
+            workspaces,
+            archivedSessionIds,
+            pinnedSessionIds,
             source,
           })
         } catch (error) {

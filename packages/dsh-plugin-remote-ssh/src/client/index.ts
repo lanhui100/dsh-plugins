@@ -47,7 +47,11 @@ export interface RemoteSshClientModels {
     list: {
       items?: readonly unknown[]
       removedIds?: Set<string>
+      archivedSessionIds?: readonly string[]
       replaceBaseline?(baseline: unknown): void
+      replaceArchived?(archivedSessionIds: readonly string[]): void
+      installArchived?(archivedSessionIds: readonly string[]): void
+      invalidate?(): void
       upsertView(view: {
         readonly workspaceId: string
         readonly path: string

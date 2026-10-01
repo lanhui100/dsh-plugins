@@ -28,6 +28,7 @@ globalThis.fetch = async () => ({
   json: async () => ({
     host: 'dev',
     total: 1,
+    archivedSessionIds: ['session-demo-1'],
     workspaces: [{
       cwd: '/tmp/demo',
       name: 'demo',
@@ -92,9 +93,17 @@ class WorkspacesService extends Service {
     super(ctx, 'workspaces')
     this.list = {
       items: [],
+      archivedSessionIds: [],
       removedIds: new Set(),
       replaceBaseline(baseline) {
         this.items = [...(baseline.items || [])]
+        this.archivedSessionIds = [...(baseline.archivedSessionIds || [])]
+      },
+      replaceArchived(ids) {
+        this.archivedSessionIds = [...ids]
+      },
+      installArchived(ids) {
+        this.archivedSessionIds = [...ids]
       },
       upsertView: (view) => {
         if (this.list.removedIds.has(view.workspaceId)) return
@@ -149,15 +158,41 @@ await new Promise((resolve) => setTimeout(resolve, 20))
 console.log(`upserted workspaces: ${upserted.length} (${upserted[0]?.title})`)
 console.log(`added sessions: ${addedSessions.length} (${addedSessions[0]?.id})`)
 
-// Contract test: official baseline stream arrives after web boot.
-// It must NOT permanently wipe out injected remote workspaces.
+// Title format contract test: must be "<host> : <name>" without "远程".
+assert.equal(
+  upserted[0]?.title,
+  'dev : demo',
+  'Remote workspace title must strictly match "<host> : <name>" format without "远程"',
+)
+
+// Archived session contract test: remote archived session must be merged into official archivedSessionIds.
 const wsList = root.get('workspaces').list
 assert.ok(wsList.items.some((item) => item.workspaceId === 'remote:/tmp/demo'), 'Remote workspace must be in model items initially')
+assert.ok(
+  wsList.archivedSessionIds.includes('session-demo-1'),
+  'Remote archived session must be registered into wsList.archivedSessionIds',
+)
 
-wsList.replaceBaseline({ items: [{ workspaceId: 'local-workspace-1', path: '/local/1', title: 'Local 1' }] })
+// Contract test: official baseline stream arrives after web boot.
+// It must NOT wipe out remote workspaces, and remote archived sessions must survive and merge with local archived.
+wsList.replaceBaseline({
+  items: [{ workspaceId: 'local-workspace-1', path: '/local/1', title: 'Local 1' }],
+  archivedSessionIds: ['local-archived-1'],
+})
 assert.ok(
   wsList.items.some((item) => item.workspaceId === 'remote:/tmp/demo'),
   'Remote workspace must survive or re-upsert after official replaceBaseline()',
+)
+assert.ok(
+  wsList.archivedSessionIds.includes('session-demo-1') && wsList.archivedSessionIds.includes('local-archived-1'),
+  'Remote archived session must survive replaceBaseline() and coexist with local archived sessions',
+)
+
+// Contract test: official replaceArchived mutation must not drop remote archived sessions.
+wsList.replaceArchived(['local-archived-2'])
+assert.ok(
+  wsList.archivedSessionIds.includes('session-demo-1') && wsList.archivedSessionIds.includes('local-archived-2'),
+  'Remote archived session must survive replaceArchived() and coexist with updated local archived sessions',
 )
 
 // Remote branch: page for the known remote id is answered from the raw route.

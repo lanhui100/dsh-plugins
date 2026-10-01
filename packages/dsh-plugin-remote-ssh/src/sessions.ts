@@ -48,8 +48,10 @@ export async function listRemoteSessions(
 export interface RemoteWorkspaceGroup {
   /** Absolute remote directory shared by this group's sessions. */
   readonly cwd: string
-  /** Display name: the directory's final path segment. */
+  /** Display name: authoritative title or directory's final path segment. */
   readonly name: string
+  /** Remote authoritative workspace ID if known from baseline. */
+  readonly workspaceId?: string
   /** Sessions in this directory, most recently active first. */
   readonly sessions: readonly RemoteSessionItem[]
   /** Total sessions in this directory before any display cap. */
@@ -66,29 +68,44 @@ function directoryName(cwd: string): string {
 /**
  * Group remote sessions into "remote workspaces" by working directory.
  *
- * The remote DSH owns real Workspace records, but the session list already
- * carries each session's `cwd`, so grouping here needs no extra round trip and
- * stays correct for sessions whose directory is not a registered Workspace.
+ * If `validWorkspaces` is provided, groups outside the authoritative baseline
+ * (e.g. deleted or transient workspaces) are excluded.
+ *
  * @param items - sessions as returned by {@link listRemoteSessions}.
  * @param limitPerGroup - maximum sessions carried per group (0 or less keeps all).
+ * @param validWorkspaces - optional map of authoritative paths to metadata.
  * @returns groups ordered by session count, then by name.
  */
 export function groupSessionsByWorkspace(
   items: readonly RemoteSessionItem[],
   limitPerGroup = 50,
+  validWorkspaces?: ReadonlyMap<string, { readonly workspaceId: string; readonly title?: string }>,
 ): readonly RemoteWorkspaceGroup[] {
   const groups = new Map<string, RemoteSessionItem[]>()
+  if (validWorkspaces !== undefined) {
+    for (const cwd of validWorkspaces.keys()) {
+      groups.set(cwd, [])
+    }
+  }
+
   for (const item of items) {
+    if (validWorkspaces !== undefined && !validWorkspaces.has(item.cwd)) {
+      continue
+    }
     const bucket = groups.get(item.cwd)
     if (bucket === undefined) groups.set(item.cwd, [item])
     else bucket.push(item)
   }
+
   return [...groups]
     .map(([cwd, sessions]) => {
       const ordered = [...sessions].sort((left, right) => right.updatedAt - left.updatedAt)
+      const meta = validWorkspaces?.get(cwd)
+      const customTitle = meta?.title?.trim()
       return {
         cwd,
-        name: directoryName(cwd),
+        name: customTitle && customTitle.length > 0 ? customTitle : directoryName(cwd),
+        workspaceId: meta?.workspaceId,
         total: ordered.length,
         sessions: limitPerGroup > 0 ? ordered.slice(0, limitPerGroup) : ordered,
       }

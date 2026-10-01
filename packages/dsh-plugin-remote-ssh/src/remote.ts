@@ -184,6 +184,151 @@ export class RemoteCaller {
       throw new RemoteAuthError('remote-ssh: token exchange set no cookie')
     }
   }
+
+  private cachedBaseline?: { data: RemoteWorkspaceBaseline; expiresAt: number }
+
+  /**
+   * Fetch the authoritative workspace baseline (active workspaces, archived sessions, pinned sessions)
+   * from the remote DSH via the WebSocket multiplexer. Results are cached for 30 seconds.
+   */
+  async fetchWorkspaceBaseline(signal?: AbortSignal): Promise<RemoteWorkspaceBaseline> {
+    if (this.cachedBaseline !== undefined && Date.now() < this.cachedBaseline.expiresAt) {
+      return this.cachedBaseline.data
+    }
+
+    await this.ensureCookie()
+    const cookie = this.jar.header()
+    const wsUrl = `${this.options.baseUrl.replace(/^http/, 'ws')}/api/remote.mux`
+    const WS = (globalThis as unknown as { WebSocket: typeof WebSocket }).WebSocket
+    if (typeof WS !== 'function') {
+      throw new Error('remote-ssh: WebSocket is not supported in the current Node environment')
+    }
+
+    const baseline = await new Promise<RemoteWorkspaceBaseline>((resolve, reject) => {
+      const streamId = `wbf-${Date.now().toString(36)}-${Math.floor(Math.random() * 0xffff).toString(16)}`
+      const socket = new WS(wsUrl, {
+        headers: cookie !== undefined ? { cookie } : {},
+      } as unknown as string[])
+
+      let settled = false
+      const timeoutId = setTimeout(() => {
+        finish(new Error('remote-ssh: timed out waiting for workspace baseline'))
+      }, 15_000)
+
+      const onAbort = () => {
+        finish(new Error('remote-ssh: workspace baseline request aborted'))
+      }
+      signal?.addEventListener('abort', onAbort, { once: true })
+
+      function finish(error?: Error, result?: RemoteWorkspaceBaseline) {
+        if (settled) return
+        settled = true
+        clearTimeout(timeoutId)
+        signal?.removeEventListener('abort', onAbort)
+        try {
+          socket.close()
+        } catch {
+          // ignore close error
+        }
+        if (error !== undefined) reject(error)
+        else if (result !== undefined) resolve(result)
+        else reject(new Error('remote-ssh: unexpected stream settlement without data'))
+      }
+
+      socket.onopen = () => {
+        try {
+          socket.send(JSON.stringify({
+            type: 'open',
+            streamId,
+            endpoint: 'workspace/follow',
+            payload: { args: {} },
+          }))
+        } catch (err) {
+          finish(err instanceof Error ? err : new Error(String(err)))
+        }
+      }
+
+      socket.onmessage = (event) => {
+        try {
+          const raw = typeof event.data === 'string' ? event.data : event.data?.toString()
+          if (!raw) return
+          const message = JSON.parse(raw) as {
+            type?: string
+            streamId?: string
+            error?: { message?: string }
+            value?: {
+              type?: string
+              value?: {
+                items?: readonly unknown[]
+                archivedSessionIds?: readonly unknown[]
+                pinnedSessionIds?: readonly unknown[]
+              }
+            }
+          }
+
+          if (message.type === 'error' && message.streamId === streamId) {
+            finish(new Error(`remote-ssh: workspace/follow stream error: ${message.error?.message ?? 'unknown'}`))
+            return
+          }
+
+          if (message.type === 'item' && message.streamId === streamId && message.value?.type === 'baseline') {
+            const val = message.value.value
+            const items: RemoteWorkspaceBaselineItem[] = Array.isArray(val?.items)
+              ? val.items.map((it: any) => ({
+                workspaceId: String(it.workspaceId),
+                path: String(it.path),
+                title: String(it.title ?? ''),
+                sessionIds: Array.isArray(it.sessionIds) ? it.sessionIds.map(String) : [],
+                createdAt: String(it.createdAt ?? ''),
+                updatedAt: String(it.updatedAt ?? ''),
+              }))
+              : []
+            const archivedSessionIds: string[] = Array.isArray(val?.archivedSessionIds)
+              ? val.archivedSessionIds.map(String)
+              : []
+            const pinnedSessionIds: string[] = Array.isArray(val?.pinnedSessionIds)
+              ? val.pinnedSessionIds.map(String)
+              : []
+
+            finish(undefined, { items, archivedSessionIds, pinnedSessionIds })
+          }
+        } catch (err) {
+          finish(err instanceof Error ? err : new Error(String(err)))
+        }
+      }
+
+      socket.onerror = (err) => {
+        finish(new Error(`remote-ssh: WebSocket error connecting to remote.mux: ${String(err)}`))
+      }
+
+      socket.onclose = () => {
+        if (!settled) {
+          finish(new Error('remote-ssh: WebSocket closed before baseline was received'))
+        }
+      }
+    })
+
+    this.cachedBaseline = {
+      data: baseline,
+      expiresAt: Date.now() + 30_000,
+    }
+    return baseline
+  }
+}
+
+export interface RemoteWorkspaceBaselineItem {
+  readonly workspaceId: string
+  readonly path: string
+  readonly title: string
+  readonly sessionIds: readonly string[]
+  readonly createdAt: string
+  readonly updatedAt: string
+}
+
+export interface RemoteWorkspaceBaseline {
+  readonly items: readonly RemoteWorkspaceBaselineItem[]
+  readonly archivedSessionIds: readonly string[]
+  readonly pinnedSessionIds: readonly string[]
 }
 
 export class RemoteAuthError extends Error {}

@@ -34,6 +34,8 @@ window.__ModuleLoader__.load({
 
     /** Known remote session ids, the proxy decision set. */
     const remoteSessionIds = new Set()
+    /** Known remote archived session ids from authoritative remote baseline. */
+    let remoteArchivedSessionIds = new Set()
     /** Currently injected synthetic remote workspace ids, for diffing and teardown. */
     let injectedWorkspaceIds = new Set()
 
@@ -48,6 +50,23 @@ window.__ModuleLoader__.load({
         if (id) return id
       }
       return req.sessionId || undefined
+    }
+
+    /** Truncate long host aliases so titles remain clean in narrow sidebars. */
+    function formatHostLabel(host, maxLen = 14) {
+      if (!host || typeof host !== 'string') return 'remote'
+      const trimmed = host.trim()
+      if (trimmed.length <= maxLen) return trimmed
+      return trimmed.slice(0, maxLen - 1) + '…'
+    }
+
+    /** HTML escape helper for DOM title injection. */
+    function escapeHtml(str) {
+      return String(str)
+        .replace(/&/g, '&amp;')
+        .replace(/</g, '&lt;')
+        .replace(/>/g, '&gt;')
+        .replace(/"/g, '&quot;')
     }
 
     /** Cached synthetic remote workspace views to survive baseline resets. */
@@ -66,22 +85,58 @@ window.__ModuleLoader__.load({
       }
     }
 
-    /** Intercept replaceBaseline on the official model so remote workspaces persist across baseline stream resets. */
+    /** Merge remote archived session IDs into the official WorkspaceModel. */
+    function syncArchivedSessions(ctx) {
+      const workspaces = ctx.workspaces && ctx.workspaces.list
+      if (!workspaces) return
+      const current = workspaces.archivedSessionIds || []
+      const localArchived = current.filter((id) => !remoteSessionIds.has(id))
+      const merged = [...new Set([...localArchived, ...remoteArchivedSessionIds])]
+      if (typeof workspaces.installArchived === 'function') {
+        workspaces.installArchived(merged)
+      } else if (typeof workspaces.replaceArchived === 'function') {
+        workspaces.replaceArchived(merged)
+      } else {
+        workspaces.archivedSessionIds = merged
+        if (typeof workspaces.invalidate === 'function') workspaces.invalidate()
+      }
+    }
+
+    /** Intercept replaceBaseline and replaceArchived so remote workspaces and archived sessions persist. */
     function installWorkspaceGuardian(ctx) {
       const workspaces = ctx.workspaces && ctx.workspaces.list
-      if (!workspaces || typeof workspaces.replaceBaseline !== 'function') return () => {}
+      if (!workspaces) return () => {}
       const originalReplaceBaseline = workspaces.replaceBaseline
-      workspaces.replaceBaseline = function (baseline) {
-        const result = originalReplaceBaseline.call(this, baseline)
-        try {
-          reapplyRemoteWorkspaces(ctx)
-        } catch {
-          // Persistence hook must not crash baseline processing.
+      const originalReplaceArchived = workspaces.replaceArchived
+
+      if (typeof originalReplaceBaseline === 'function') {
+        workspaces.replaceBaseline = function (baseline) {
+          const result = originalReplaceBaseline.call(this, baseline)
+          try {
+            reapplyRemoteWorkspaces(ctx)
+            syncArchivedSessions(ctx)
+          } catch {
+            // Persistence hook must not crash baseline processing.
+          }
+          return result
         }
-        return result
       }
+
+      if (typeof originalReplaceArchived === 'function') {
+        workspaces.replaceArchived = function (archivedSessionIds) {
+          const result = originalReplaceArchived.call(this, archivedSessionIds)
+          try {
+            syncArchivedSessions(ctx)
+          } catch {
+            // Persistence hook must not crash archive updates.
+          }
+          return result
+        }
+      }
+
       return () => {
-        workspaces.replaceBaseline = originalReplaceBaseline
+        if (originalReplaceBaseline) workspaces.replaceBaseline = originalReplaceBaseline
+        if (originalReplaceArchived) workspaces.replaceArchived = originalReplaceArchived
       }
     }
 
@@ -95,11 +150,19 @@ window.__ModuleLoader__.load({
         if (workspaces && typeof workspaces.removeView === 'function') {
           for (const wid of injectedWorkspaceIds) workspaces.removeView(wid)
         }
+        // Remove remote archived session IDs from official registry
+        if (workspaces && workspaces.archivedSessionIds) {
+          const current = workspaces.archivedSessionIds
+          const restored = current.filter((id) => !remoteArchivedSessionIds.has(id))
+          if (typeof workspaces.installArchived === 'function') workspaces.installArchived(restored)
+          else workspaces.archivedSessionIds = restored
+        }
       } catch {
         // Teardown must not throw into the loader.
       }
       cachedWorkspaceViews = []
       remoteSessionIds.clear()
+      remoteArchivedSessionIds.clear()
       injectedWorkspaceIds = new Set()
     }
 
@@ -121,16 +184,24 @@ window.__ModuleLoader__.load({
       const nextSessionIds = new Set()
       const nextWorkspaceViews = new Map()
       const nextSessions = []
+      const displayHost = formatHostLabel(body.host)
+
+      // Store remote archived sessions
+      remoteArchivedSessionIds = new Set(
+        Array.isArray(body.archivedSessionIds) ? body.archivedSessionIds.map(String) : []
+      )
 
       for (const ws of body.workspaces) {
         if (!ws || typeof ws.cwd !== 'string') continue
         const sessionIds = (ws.sessions || []).map((s) => String(s.sessionId))
         for (const id of sessionIds) nextSessionIds.add(id)
         const workspaceId = `remote:${ws.cwd}`
+        // Format: <远程主机名> : <工作区文件夹名称> (no "远程" word)
+        const title = `${displayHost} : ${ws.name}`
         nextWorkspaceViews.set(workspaceId, {
           workspaceId,
           path: ws.cwd,
-          title: `远程 ${ws.name}`,
+          title,
           sessionIds,
           createdAt: new Date().toISOString(),
           updatedAt: new Date().toISOString(),
@@ -185,6 +256,9 @@ window.__ModuleLoader__.load({
       remoteSessionIds.clear()
       for (const id of nextSessionIds) remoteSessionIds.add(id)
       injectedWorkspaceIds = new Set(nextWorkspaceViews.keys())
+
+      // Synchronize archived sessions into official workspace list
+      syncArchivedSessions(ctx)
     }
 
     /** Wrap `ctx.remote.session` so remote ids are served from the tunnel, locals unchanged. */
@@ -290,6 +364,85 @@ window.__ModuleLoader__.load({
       }
     }
 
+    /** Visual enhancer: add remote element badge to workspace folder and bold host title. */
+    const STYLE_TAG_ID = 'dsh-plugin-remote-ssh-style'
+
+    function installStyles() {
+      if (typeof document === 'undefined') return () => {}
+      let tag = document.getElementById(STYLE_TAG_ID)
+      if (!tag) {
+        tag = document.createElement('style')
+        tag.id = STYLE_TAG_ID
+        tag.textContent = `
+          div[data-row-key^="workspace:remote:"] span[class*="folder"] {
+            position: relative !important;
+          }
+          div[data-row-key^="workspace:remote:"] span[class*="folder"]::after {
+            content: '';
+            position: absolute;
+            bottom: -1px;
+            right: -2px;
+            width: 8px;
+            height: 8px;
+            border-radius: 50%;
+            background-color: var(--dsw-alias-color-brand-default, #2563eb);
+            background-image: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 10 10' fill='white'%3E%3Cpath d='M2 5.5a3 3 0 0 1 6 0H2z'/%3E%3Ccircle cx='5' cy='7.5' r='1'/%3E%3C/svg%3E");
+            background-size: 6px 6px;
+            background-repeat: no-repeat;
+            background-position: center;
+            border: 1.5px solid var(--dsw-alias-bg-canvas, #ffffff);
+            box-shadow: 0 0 2px rgba(0, 0, 0, 0.25);
+            pointer-events: none;
+            z-index: 2;
+          }
+          .dsh-remote-host-prefix {
+            font-weight: 700 !important;
+            color: var(--dsw-alias-label-primary, inherit);
+            margin-right: 2px;
+          }
+        `
+        document.head.appendChild(tag)
+      }
+      return () => {
+        const el = document.getElementById(STYLE_TAG_ID)
+        if (el) el.remove()
+      }
+    }
+
+    function decorateRemoteTitles() {
+      if (typeof document === 'undefined') return
+      const rows = document.querySelectorAll('div[data-row-key^="workspace:remote:"]')
+      for (const row of rows) {
+        const titleEl = row.querySelector('span[class*="title"]')
+        if (!titleEl || titleEl.dataset.remoteDecorated === 'true') continue
+        const text = titleEl.textContent || ''
+        const colonIdx = text.indexOf(' : ')
+        if (colonIdx !== -1) {
+          const host = text.slice(0, colonIdx)
+          const rest = text.slice(colonIdx + 3)
+          titleEl.dataset.remoteDecorated = 'true'
+          titleEl.innerHTML = `<strong class="dsh-remote-host-prefix">${escapeHtml(host)}</strong> : ${escapeHtml(rest)}`
+        }
+      }
+    }
+
+    function installTitleDecorator() {
+      if (typeof document === 'undefined' || typeof MutationObserver === 'undefined') return () => {}
+      decorateRemoteTitles()
+      const observer = new MutationObserver(() => {
+        decorateRemoteTitles()
+      })
+      observer.observe(document.body, { childList: true, subtree: true })
+      return () => {
+        observer.disconnect()
+        const decorated = document.querySelectorAll('span[data-remote-decorated="true"]')
+        for (const el of decorated) {
+          el.textContent = el.textContent
+          delete el.dataset.remoteDecorated
+        }
+      }
+    }
+
     /**
      * Activate the integration: publish remote workspaces/sessions into the
      * official models and wrap the session namespace for remote interception.
@@ -298,12 +451,16 @@ window.__ModuleLoader__.load({
     function apply(ctx) {
       const restoreProxy = installSessionProxy(ctx)
       const restoreGuardian = installWorkspaceGuardian(ctx)
+      const restoreStyles = installStyles()
+      const restoreDecorator = installTitleDecorator()
       const timer = setInterval(() => { void reconcileRemoteSource(ctx) }, POLL_INTERVAL_MS)
       void reconcileRemoteSource(ctx)
       ctx.effect(() => () => {
         clearInterval(timer)
         restoreProxy()
         restoreGuardian()
+        restoreStyles()
+        restoreDecorator()
         removeRemoteSource(ctx)
       })
     }
