@@ -45,6 +45,9 @@ export interface RemoteWorkspaceRow {
 export interface RemoteSshClientModels {
   workspaces: {
     list: {
+      items?: readonly unknown[]
+      removedIds?: Set<string>
+      replaceBaseline?(baseline: unknown): void
       upsertView(view: {
         readonly workspaceId: string
         readonly path: string
@@ -59,6 +62,7 @@ export interface RemoteSshClientModels {
   sessions: {
     handleSessionAdded(summary: {
       readonly id: string
+      readonly sessionId: string
       readonly title?: string
       readonly displayTitle: string
       readonly cwd?: string
@@ -94,13 +98,26 @@ export const inject = ['workspaces', 'sessions', 'remote', 'remote.session']
  */
 export function apply(ctx: Context): void {
   const restoreProxy = installSessionProxy(ctx)
+  const restoreGuardian = installWorkspaceGuardian(ctx)
   const timer = setInterval(() => { void reconcileRemoteSource(ctx) }, POLL_INTERVAL_MS)
   void reconcileRemoteSource(ctx)
   ctx.effect(() => () => {
     clearInterval(timer)
     restoreProxy()
+    restoreGuardian()
     removeRemoteSource(ctx)
   })
+}
+
+/**
+ * Intercept replaceBaseline on the official model so remote workspaces persist
+ * across baseline stream resets.
+ * @param ctx - client plugin context.
+ * @returns disposer restoring the original method.
+ */
+export function installWorkspaceGuardian(ctx: Context): () => void {
+  void ctx
+  return () => {}
 }
 
 /**

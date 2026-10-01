@@ -91,8 +91,23 @@ class WorkspacesService extends Service {
   constructor(ctx) {
     super(ctx, 'workspaces')
     this.list = {
-      upsertView: (view) => upserted.push(view),
-      removeView: (id) => removedWorkspaces.push(id),
+      items: [],
+      removedIds: new Set(),
+      replaceBaseline(baseline) {
+        this.items = [...(baseline.items || [])]
+      },
+      upsertView: (view) => {
+        if (this.list.removedIds.has(view.workspaceId)) return
+        upserted.push(view)
+        const idx = this.list.items.findIndex((item) => item.workspaceId === view.workspaceId)
+        if (idx === -1) this.list.items.unshift(view)
+        else this.list.items[idx] = view
+      },
+      removeView: (id) => {
+        this.list.removedIds.add(id)
+        removedWorkspaces.push(id)
+        this.list.items = this.list.items.filter((item) => item.workspaceId !== id)
+      },
     }
   }
 }
@@ -102,6 +117,7 @@ class SessionsService extends Service {
     super(ctx, 'sessions')
   }
   handleSessionAdded(summary) {
+    assert.ok(summary.sessionId, 'Session summary must contain sessionId field')
     addedSessions.push(summary)
   }
   handleSessionRemoved(id) {
@@ -132,6 +148,17 @@ await new Promise((resolve) => setTimeout(resolve, 20))
 
 console.log(`upserted workspaces: ${upserted.length} (${upserted[0]?.title})`)
 console.log(`added sessions: ${addedSessions.length} (${addedSessions[0]?.id})`)
+
+// Contract test: official baseline stream arrives after web boot.
+// It must NOT permanently wipe out injected remote workspaces.
+const wsList = root.get('workspaces').list
+assert.ok(wsList.items.some((item) => item.workspaceId === 'remote:/tmp/demo'), 'Remote workspace must be in model items initially')
+
+wsList.replaceBaseline({ items: [{ workspaceId: 'local-workspace-1', path: '/local/1', title: 'Local 1' }] })
+assert.ok(
+  wsList.items.some((item) => item.workspaceId === 'remote:/tmp/demo'),
+  'Remote workspace must survive or re-upsert after official replaceBaseline()',
+)
 
 // Remote branch: page for the known remote id is answered from the raw route.
 const remotePage = await pluginCtx.remote.session.page(

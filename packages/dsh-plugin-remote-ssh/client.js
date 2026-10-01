@@ -50,6 +50,41 @@ window.__ModuleLoader__.load({
       return req.sessionId || undefined
     }
 
+    /** Cached synthetic remote workspace views to survive baseline resets. */
+    let cachedWorkspaceViews = []
+
+    function reapplyRemoteWorkspaces(ctx) {
+      const workspaces = ctx.workspaces && ctx.workspaces.list
+      if (!workspaces || typeof workspaces.upsertView !== 'function') return
+      if (workspaces.removedIds && typeof workspaces.removedIds.delete === 'function') {
+        for (const view of cachedWorkspaceViews) {
+          workspaces.removedIds.delete(view.workspaceId)
+        }
+      }
+      for (const view of cachedWorkspaceViews) {
+        workspaces.upsertView(view)
+      }
+    }
+
+    /** Intercept replaceBaseline on the official model so remote workspaces persist across baseline stream resets. */
+    function installWorkspaceGuardian(ctx) {
+      const workspaces = ctx.workspaces && ctx.workspaces.list
+      if (!workspaces || typeof workspaces.replaceBaseline !== 'function') return () => {}
+      const originalReplaceBaseline = workspaces.replaceBaseline
+      workspaces.replaceBaseline = function (baseline) {
+        const result = originalReplaceBaseline.call(this, baseline)
+        try {
+          reapplyRemoteWorkspaces(ctx)
+        } catch {
+          // Persistence hook must not crash baseline processing.
+        }
+        return result
+      }
+      return () => {
+        workspaces.replaceBaseline = originalReplaceBaseline
+      }
+    }
+
     function removeRemoteSource(ctx) {
       try {
         const sessions = ctx.sessions
@@ -63,6 +98,7 @@ window.__ModuleLoader__.load({
       } catch {
         // Teardown must not throw into the loader.
       }
+      cachedWorkspaceViews = []
       remoteSessionIds.clear()
       injectedWorkspaceIds = new Set()
     }
@@ -83,13 +119,39 @@ window.__ModuleLoader__.load({
       const workspaces = ctx.workspaces && ctx.workspaces.list
 
       const nextSessionIds = new Set()
-      const workspaceByCwd = new Map()
+      const nextWorkspaceViews = new Map()
+      const nextSessions = []
+
       for (const ws of body.workspaces) {
         if (!ws || typeof ws.cwd !== 'string') continue
         const sessionIds = (ws.sessions || []).map((s) => String(s.sessionId))
         for (const id of sessionIds) nextSessionIds.add(id)
-        workspaceByCwd.set(ws.cwd, { name: ws.name, sessionIds })
+        const workspaceId = `remote:${ws.cwd}`
+        nextWorkspaceViews.set(workspaceId, {
+          workspaceId,
+          path: ws.cwd,
+          title: `远程 ${ws.name}`,
+          sessionIds,
+          createdAt: new Date().toISOString(),
+          updatedAt: new Date().toISOString(),
+        })
+        for (const s of ws.sessions || []) {
+          const id = String(s.sessionId)
+          nextSessions.push({
+            id,
+            sessionId: id,
+            title: typeof s.title === 'string' ? s.title : undefined,
+            displayTitle: typeof s.title === 'string' && s.title !== '' ? s.title : id,
+            cwd: typeof s.cwd === 'string' ? s.cwd : undefined,
+            running: Boolean(s.running),
+            blank: Boolean(s.blank),
+            updatedAt: typeof s.updatedAt === 'number' ? s.updatedAt : Date.now(),
+            retainedBy: {},
+          })
+        }
       }
+
+      cachedWorkspaceViews = [...nextWorkspaceViews.values()]
 
       // Sessions: drop remote rows absent from this snapshot, then upsert the rest.
       if (sessions && typeof sessions.handleSessionRemoved === 'function') {
@@ -98,48 +160,31 @@ window.__ModuleLoader__.load({
         }
       }
       if (sessions && typeof sessions.handleSessionAdded === 'function') {
-        for (const ws of body.workspaces) {
-          for (const s of ws.sessions || []) {
-            const id = String(s.sessionId)
-            sessions.handleSessionAdded({
-              id,
-              title: typeof s.title === 'string' ? s.title : undefined,
-              displayTitle: typeof s.title === 'string' && s.title !== '' ? s.title : id,
-              cwd: typeof s.cwd === 'string' ? s.cwd : undefined,
-              running: Boolean(s.running),
-              blank: Boolean(s.blank),
-              updatedAt: typeof s.updatedAt === 'number' ? s.updatedAt : Date.now(),
-              retainedBy: {},
-            })
-          }
+        for (const s of nextSessions) {
+          sessions.handleSessionAdded(s)
         }
       }
 
       // Workspaces: remove vanished synthetic groups, then (re)upsert current ones.
       if (workspaces && typeof workspaces.removeView === 'function') {
         for (const wid of injectedWorkspaceIds) {
-          if (!workspaceByCwd.has(wid)) workspaces.removeView(wid)
+          if (!nextWorkspaceViews.has(wid)) workspaces.removeView(wid)
         }
       }
-      const nextWorkspaceIds = new Set()
       if (workspaces && typeof workspaces.upsertView === 'function') {
-        for (const [cwd, info] of workspaceByCwd) {
-          const workspaceId = `remote:${cwd}`
-          nextWorkspaceIds.add(workspaceId)
-          workspaces.upsertView({
-            workspaceId,
-            path: cwd,
-            title: `远程 ${info.name}`,
-            sessionIds: info.sessionIds,
-            createdAt: new Date().toISOString(),
-            updatedAt: new Date().toISOString(),
-          })
+        if (workspaces.removedIds && typeof workspaces.removedIds.delete === 'function') {
+          for (const wid of nextWorkspaceViews.keys()) {
+            workspaces.removedIds.delete(wid)
+          }
+        }
+        for (const view of cachedWorkspaceViews) {
+          workspaces.upsertView(view)
         }
       }
 
       remoteSessionIds.clear()
       for (const id of nextSessionIds) remoteSessionIds.add(id)
-      injectedWorkspaceIds = nextWorkspaceIds
+      injectedWorkspaceIds = new Set(nextWorkspaceViews.keys())
     }
 
     /** Wrap `ctx.remote.session` so remote ids are served from the tunnel, locals unchanged. */
@@ -252,11 +297,13 @@ window.__ModuleLoader__.load({
      */
     function apply(ctx) {
       const restoreProxy = installSessionProxy(ctx)
+      const restoreGuardian = installWorkspaceGuardian(ctx)
       const timer = setInterval(() => { void reconcileRemoteSource(ctx) }, POLL_INTERVAL_MS)
       void reconcileRemoteSource(ctx)
       ctx.effect(() => () => {
         clearInterval(timer)
         restoreProxy()
+        restoreGuardian()
         removeRemoteSource(ctx)
       })
     }
