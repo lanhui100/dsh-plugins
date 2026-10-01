@@ -4,13 +4,15 @@ import type { Context } from '@deepseek-ai/cordis'
 import { SshTunnel } from './tunnel.ts'
 import { RemoteCaller } from './remote.ts'
 import { registerRemoteSshCommand } from './command.ts'
+import { registerRemoteSshRoute } from './route.ts'
 import type { Config } from './config.ts'
 
 export { Config } from './config.ts'
 export { SshTunnel } from './tunnel.ts'
 export { RemoteCaller, RemoteAuthError, readLaunchToken } from './remote.ts'
-export { listRemoteSessions, type RemoteSessionItem } from './sessions.ts'
+export { listRemoteSessions, groupSessionsByWorkspace, type RemoteSessionItem, type RemoteWorkspaceGroup } from './sessions.ts'
 export { registerRemoteSshCommand } from './command.ts'
+export { registerRemoteSshRoute, SESSIONS_ROUTE } from './route.ts'
 
 /**
  * Services this entry needs before `apply` runs.
@@ -33,6 +35,7 @@ export function apply(ctx: Context, config: Config): void {
   let callerReady: RemoteCaller | undefined
 
   registerRemoteSshCommand(ctx, () => callerReady)
+  registerRemoteSshRoute(ctx, () => callerReady, config.host)
 
   ctx.effect(() => {
     let stopped = false

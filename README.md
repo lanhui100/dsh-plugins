@@ -12,18 +12,21 @@
 
 - `packages/dsh-plugin-remote-ssh`（已落地）：经 SSH 隧道聚合远程 DSH 实例的工作区与会话到本地 UI（方案 B）。
   - SSH 隧道自动维护与重连 (`tunnel.ts`)
-  - 远端进程 Token 读取与 authority 绑定 Cookie 自动置换 (`remote.ts`)
-  - 远端 `/api/session/list` 会话聚合与模型投影提取 (`sessions.ts`)
+  - 远端进程 Token 读取与 authority 绑定 Cookie 自动置换，隧道就绪即预热 (`remote.ts`)
+  - 远端 `/api/session/list` 会话聚合 + 按 cwd 归并成"远程工作区" (`sessions.ts`)
   - 对话输入框 `/remote-ssh` 人类命令（`inject = ['commands']`）(`command.ts`)
-  - Client 侧边栏底部状态按钮：DSH 闭包工厂产物 (`client.js`，手工维护；`src/client/index.ts` 为类型真源)
+  - 只读面板数据路由 `GET /remote-ssh/sessions`（可选注入 `webServer`）(`route.ts`)
+  - 「远程工作区: \<host\>」面板：`sidebar.panellist` 图标 + `main` 面板，DSH 闭包工厂产物 (`client.js`，手工维护；`src/client/index.ts` 为类型真源)
 
 ## 快速开始与验证
 
 1. 构建与冒烟：
    ```bash
    pnpm --filter dsh-plugin-remote-ssh build
-   node packages/dsh-plugin-remote-ssh/smoke-client-bundle.mjs   # Client 半契约
-   node packages/dsh-plugin-remote-ssh/smoke-command-live.mjs    # 隧道 + /remote-ssh 端到端
+   node packages/dsh-plugin-remote-ssh/smoke-client-bundle.mjs   # Client 半契约（panel + icon）
+   node packages/dsh-plugin-remote-ssh/smoke-host-apply.mjs      # Host 入口契约（命令 + 路由）
+   node packages/dsh-plugin-remote-ssh/smoke-route.mjs           # 面板数据（走已就绪隧道）
+   node packages/dsh-plugin-remote-ssh/smoke-command-live.mjs    # /remote-ssh 端到端（自建隧道）
    ```
 2. 本地 Desktop 挂载：写入 **home 层** `$DSH_HOME/cordis.patch.yml`（**不要写 profile 层**——桌面应用会按自己的设置库重写 `profiles/<name>/cordis.patch.yml`，手写行会被抹掉）。必须是 `- insert:`，顶层 `- id:` 会被静默跳过：
    ```yaml

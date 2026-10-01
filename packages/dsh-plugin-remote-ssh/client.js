@@ -15,6 +15,10 @@
  *   `@deepseek-ai/dsh-client-store`, `@deepseek-ai/dsh-client-ui-slots`,
  *   `@deepseek-ai/dsh-client-ui-primitives`, and `@deepseek-ai/dsh-client-ui-dockkit`;
  * - `exports.apply` is the plugin entry and `exports.inject` its Cordis service edges.
+ *
+ * Surface: one global panel — a `sidebar.panellist` icon plus the `main` keyed
+ * panel it opens — listing the remote DSH's sessions grouped into remote
+ * workspaces. The Host serves that tree at `/remote-ssh/sessions`, same origin.
  */
 window.__ModuleLoader__.load({
   id: 'dsh-plugin-remote-ssh',
@@ -25,82 +29,264 @@ window.__ModuleLoader__.load({
 
     const react = require('react')
 
-    const LABEL = '远程: dev (3080)'
-    const TITLE = '远程 DSH 服务（SSH 隧道 dev → 127.0.0.1:3080）\n'
-      + '点击查看连接详情；在输入框执行 /remote-ssh 可列出远端全部会话。'
-    const DETAIL = '【远程 DSH 实例已连接】\n'
-      + '• 远程主机：dev (devserver.taildb165c.ts.net:2022)\n'
-      + '• 隧道状态：活跃（转发至 127.0.0.1:3080）\n\n'
-      + '提示：在当前对话输入框输入 /remote-ssh 即可拉取远端最新会话清单。'
+    /** Panel id shared by the sidebar entry and the main panel it opens. */
+    const PANEL_ID = 'remote'
+    const ROUTE = '/remote-ssh/sessions'
 
-    /** Status dot: the connected indicator beside the label. */
-    const dotStyle = {
-      display: 'inline-block',
-      width: '8px',
-      height: '8px',
-      borderRadius: '50%',
-      backgroundColor: '#10b981',
-      flexShrink: 0,
-      boxShadow: '0 0 6px rgba(16, 185, 129, 0.6)',
+    const INK = 'inherit'
+    const MUTED = 'rgba(127,127,127,0.95)'
+    const HAIRLINE = '1px solid rgba(128,128,128,0.18)'
+    const RUNNING = '#10b981'
+    const IDLE = 'rgba(128,128,128,0.55)'
+    const ERROR = '#ef4444'
+
+    /**
+     * Coarse relative age of a millisecond timestamp.
+     * @param timestamp - session `updatedAt`.
+     * @returns compact age such as `12s`, `7m`, `3h`, `2d`.
+     */
+    function relativeTime(timestamp) {
+      if (typeof timestamp !== 'number' || !Number.isFinite(timestamp)) return ''
+      const seconds = Math.max(0, Math.round((Date.now() - timestamp) / 1000))
+      if (seconds < 60) return `${seconds}s`
+      const minutes = Math.round(seconds / 60)
+      if (minutes < 60) return `${minutes}m`
+      const hours = Math.round(minutes / 60)
+      if (hours < 24) return `${hours}h`
+      return `${Math.round(hours / 24)}d`
     }
 
     /**
-     * Sidebar footer action occupant.
-     * @param props - owner share; `wide` distinguishes the full column from the rail.
+     * The sidebar's Remote entry glyph.
+     * @param props - sidebar icon share: requested edge and selection state.
      */
-    function RemoteSshFooterAction(props) {
-      const wide = props !== null && props !== undefined && props.wide === true
+    function RemotePanelIcon(props) {
+      const size = typeof props?.size === 'number' ? props.size : 16
+      const active = props?.active === true
       return react.createElement(
-        'button',
+        'svg',
         {
-          type: 'button',
-          title: TITLE,
-          style: {
-            display: 'inline-flex',
-            alignItems: 'center',
-            justifyContent: wide ? 'flex-start' : 'center',
-            gap: '8px',
-            padding: wide ? '5px 8px' : '5px',
-            background: 'rgba(128, 128, 128, 0.08)',
-            border: '1px solid rgba(128, 128, 128, 0.18)',
-            borderRadius: '6px',
-            color: 'inherit',
-            cursor: 'pointer',
-            fontSize: '12px',
-            width: wide ? '100%' : '32px',
-            height: '32px',
-            boxSizing: 'border-box',
-          },
-          onClick: () => {
-            if (typeof window !== 'undefined' && typeof window.alert === 'function') window.alert(DETAIL)
-          },
+          width: size,
+          height: size,
+          viewBox: '0 0 16 16',
+          fill: 'none',
+          stroke: 'currentColor',
+          strokeWidth: active ? 1.6 : 1.3,
+          strokeLinecap: 'round',
+          strokeLinejoin: 'round',
+          'aria-hidden': 'true',
         },
-        react.createElement('span', { style: dotStyle }),
-        wide
+        react.createElement('rect', { x: 2.2, y: 3.2, width: 11.6, height: 4.4, rx: 1.2 }),
+        react.createElement('rect', { x: 2.2, y: 9.4, width: 11.6, height: 3.4, rx: 1.2 }),
+        react.createElement('circle', { cx: 4.7, cy: 5.4, r: 0.85, fill: 'currentColor', stroke: 'none' }),
+        react.createElement('circle', { cx: 4.7, cy: 11.1, r: 0.85, fill: 'currentColor', stroke: 'none' }),
+      )
+    }
+
+    /**
+     * One collapsible remote-workspace row with its sessions.
+     * @param props - group, expansion state, and the toggle callback.
+     */
+    function WorkspaceGroup(props) {
+      const group = props.group
+      const expanded = props.expanded === true
+      const rows = group.sessions.map((session) => react.createElement(
+        'div',
+        {
+          key: session.sessionId,
+          title: `${session.sessionId}\n${session.cwd}`,
+          style: { display: 'flex', alignItems: 'center', gap: '8px', padding: '4px 12px 4px 34px', fontSize: '12px' },
+        },
+        react.createElement('span', {
+          style: {
+            display: 'inline-block',
+            width: '6px',
+            height: '6px',
+            borderRadius: '50%',
+            flexShrink: 0,
+            backgroundColor: session.running ? RUNNING : IDLE,
+          },
+        }),
+        react.createElement('span', {
+          style: { overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' },
+        }, session.title || session.sessionId),
+        react.createElement('span', {
+          style: { marginLeft: 'auto', color: MUTED, fontSize: '11px', flexShrink: 0 },
+        }, relativeTime(session.updatedAt)),
+      ))
+
+      return react.createElement(
+        'div',
+        { style: { borderTop: '1px solid rgba(128,128,128,0.14)' } },
+        react.createElement(
+          'button',
+          {
+            type: 'button',
+            onClick: props.onToggle,
+            title: group.cwd,
+            style: {
+              display: 'flex',
+              alignItems: 'center',
+              gap: '8px',
+              width: '100%',
+              padding: '7px 12px',
+              background: 'transparent',
+              border: 'none',
+              color: INK,
+              cursor: 'pointer',
+              textAlign: 'left',
+              fontSize: '12.5px',
+              fontWeight: 600,
+            },
+          },
+          react.createElement('span', { style: { width: '10px', color: MUTED, flexShrink: 0 } }, expanded ? '▾' : '▸'),
+          react.createElement('span', {
+            style: { overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' },
+          }, group.name),
+          react.createElement('span', {
+            style: { marginLeft: 'auto', color: MUTED, fontWeight: 400, flexShrink: 0 },
+          }, String(group.total)),
+        ),
+        react.createElement('div', {
+          style: {
+            padding: '0 12px 4px 30px',
+            color: MUTED,
+            fontSize: '11px',
+            overflow: 'hidden',
+            textOverflow: 'ellipsis',
+            whiteSpace: 'nowrap',
+          },
+        }, group.cwd),
+        expanded
           ? react.createElement(
-            'span',
-            { style: { overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap', fontWeight: 500 } },
-            LABEL,
+            'div',
+            { style: { paddingBottom: '6px' } },
+            rows,
+            group.total > group.sessions.length
+              ? react.createElement('div', {
+                style: { padding: '2px 12px 6px 34px', color: MUTED, fontSize: '11px' },
+              }, `… ${group.total - group.sessions.length} more in this workspace`)
+              : null,
           )
           : null,
       )
     }
 
+    /** The Remote workspaces page: one fetch, a grouped tree, manual refresh. */
+    function RemotePanel() {
+      const [state, setState] = react.useState({ status: 'loading' })
+      const [expanded, setExpanded] = react.useState(null)
+      const [nonce, setNonce] = react.useState(0)
+
+      react.useEffect(() => {
+        let alive = true
+        const load = async () => {
+          try {
+            const response = await fetch(ROUTE, { headers: { accept: 'application/json' } })
+            const body = await response.json().catch(() => null)
+            if (!alive) return
+            if (!response.ok || body === null || !Array.isArray(body.workspaces)) {
+              setState({
+                status: 'error',
+                message: (body && (body.message || body.error)) || `HTTP ${response.status}`,
+              })
+              return
+            }
+            setState({ status: 'ready', host: body.host, total: body.total, workspaces: body.workspaces })
+            setExpanded((current) => current ?? body.workspaces[0]?.cwd ?? null)
+          } catch (error) {
+            if (alive) setState({ status: 'error', message: (error && error.message) || String(error) })
+          }
+        }
+        void load()
+        return () => { alive = false }
+      }, [nonce])
+
+      const header = react.createElement(
+        'div',
+        {
+          style: {
+            display: 'flex',
+            alignItems: 'center',
+            gap: '10px',
+            padding: '12px 14px',
+            borderBottom: HAIRLINE,
+            flexShrink: 0,
+          },
+        },
+        react.createElement('span', { style: { fontWeight: 600, fontSize: '13px' } },
+          state.status === 'ready' ? `远程工作区: ${state.host}` : '远程工作区'),
+        state.status === 'ready'
+          ? react.createElement('span', { style: { color: MUTED, fontSize: '12px' } },
+            `${state.total} sessions · ${state.workspaces.length} workspaces`)
+          : null,
+        react.createElement('button', {
+          type: 'button',
+          onClick: () => setNonce((value) => value + 1),
+          style: {
+            marginLeft: 'auto',
+            padding: '4px 10px',
+            fontSize: '12px',
+            background: 'transparent',
+            border: HAIRLINE,
+            borderRadius: '6px',
+            color: INK,
+            cursor: 'pointer',
+          },
+        }, '刷新'),
+      )
+
+      let body
+      if (state.status === 'loading') {
+        body = react.createElement('div', { style: { padding: '16px 14px', color: MUTED, fontSize: '12px' } },
+          '正在读取远端会话…')
+      } else if (state.status === 'error') {
+        body = react.createElement('div', { style: { padding: '16px 14px', fontSize: '12px' } },
+          react.createElement('div', { style: { color: ERROR, marginBottom: '6px' } }, '无法读取远端会话'),
+          react.createElement('div', { style: { color: MUTED } }, String(state.message)))
+      } else if (state.workspaces.length === 0) {
+        body = react.createElement('div', { style: { padding: '16px 14px', color: MUTED, fontSize: '12px' } },
+          '远端暂无会话。')
+      } else {
+        body = react.createElement(
+          'div',
+          { style: { overflowY: 'auto', flex: 1, minHeight: 0 } },
+          state.workspaces.map((group) => react.createElement(WorkspaceGroup, {
+            key: group.cwd,
+            group,
+            expanded: expanded === group.cwd,
+            onToggle: () => setExpanded(expanded === group.cwd ? null : group.cwd),
+          })),
+        )
+      }
+
+      return react.createElement(
+        'div',
+        { style: { display: 'flex', flexDirection: 'column', height: '100%', minHeight: 0, color: INK } },
+        header,
+        body,
+      )
+    }
+
     /**
-     * Register the sidebar footer action; the slot owner declares the seat.
+     * Contribute the Remote workspaces panel and its sidebar entry.
      * @param ctx - client plugin context carrying the slot registry.
      */
     function apply(ctx) {
-      ctx.slots.inject('sidebar.footer.action', () => ctx.slots.register({
-        name: 'sidebar.footer.action',
-        id: 'remote-ssh-status',
-        order: 300,
-        label: LABEL,
-      }, RemoteSshFooterAction))
+      ctx.slots.inject('main', () => ctx.slots.register({
+        name: 'main',
+        key: PANEL_ID,
+      }, RemotePanel))
+      ctx.slots.inject('sidebar.panellist', () => ctx.slots.register({
+        name: 'sidebar.panellist',
+        id: PANEL_ID,
+        order: 100,
+        label: '远程工作区',
+      }, RemotePanelIcon))
     }
 
     exports.apply = apply
-    exports.inject = ['slots']
+    exports.inject = ['slots', 'layout']
     return module.exports
   },
 })

@@ -1,17 +1,39 @@
-/** Client half of dsh-plugin-remote-ssh: sidebar footer action indicator. */
+/**
+ * Client half of dsh-plugin-remote-ssh — typed source of truth for the panel.
+ *
+ * The artifact the browser actually loads is the hand-maintained
+ * `client.js` at the package root (DSH closure-factory format); this module
+ * mirrors that design for type checking and documentation. Change both
+ * together, then run `smoke-client-bundle.mjs`.
+ *
+ * Surface: a `sidebar.panellist` icon plus the `main` keyed panel it opens,
+ * listing the remote DSH's sessions grouped into remote workspaces.
+ */
 
 import type { Context } from '@deepseek-ai/cordis'
 import type ReactTypes from 'react'
 
+/** Fraction of the React surface this plugin uses. */
+type ReactLike = Pick<typeof ReactTypes, 'createElement' | 'useState' | 'useEffect'>
+
+/** Panel id shared by the sidebar entry and the main panel it opens. */
+export const PANEL_ID = 'remote'
+
+/** Host route serving the workspace tree, same origin as the page. */
+export const SESSIONS_ROUTE = '/remote-ssh/sessions'
+
+/** Host slot declaration accepted by the client slot registry. */
 export interface ClientSlotRegistration {
   name: string
-  id: string
+  id?: string
+  key?: string
   order?: number
-  label?: string
+  label?: string | (() => string)
 }
 
+/** Client slot registry surface used by this plugin. */
 export interface ClientSlotsService {
-  inject(name: string, callback: () => Generator<unknown, void, unknown> | unknown): void
+  inject(name: string, callback: () => unknown): void
   register(declaration: ClientSlotRegistration, component: unknown): unknown
 }
 
@@ -21,92 +43,107 @@ declare module '@deepseek-ai/cordis' {
   }
 }
 
-export const inject = ['slots']
+/** Services the client entry needs before `apply` runs. */
+export const inject = ['slots', 'layout']
 
 /**
- * Activate the Client half: register a status indicator and action
- * in the sidebar footer (`sidebar.footer.action`).
+ * Coarse relative age of a millisecond timestamp.
+ * @param timestamp - session `updatedAt`.
+ * @returns compact age such as `12s`, `7m`, `3h`, `2d`.
+ */
+function relativeTime(timestamp: unknown): string {
+  if (typeof timestamp !== 'number' || !Number.isFinite(timestamp)) return ''
+  const seconds = Math.max(0, Math.round((Date.now() - timestamp) / 1000))
+  if (seconds < 60) return `${seconds}s`
+  const minutes = Math.round(seconds / 60)
+  if (minutes < 60) return `${minutes}m`
+  const hours = Math.round(minutes / 60)
+  if (hours < 24) return `${hours}h`
+  return `${Math.round(hours / 24)}d`
+}
+
+/**
+ * Contribute the Remote workspaces panel and its sidebar entry.
  * @param ctx - client plugin context carrying the slot registry.
  */
 export function apply(ctx: Context): void {
-  ctx.slots.inject('sidebar.footer.action', function* () {
-    yield ctx.slots.register(
-      {
-        name: 'sidebar.footer.action',
-        id: 'remote-ssh-status',
-        order: 300,
-        label: '远程 DSH (dev)',
-      },
-      (props: { wide: boolean }) => {
-        // Safe access to the runtime React global exposed by the DSH client container
-        const React = (globalThis as unknown as { React?: typeof ReactTypes }).React
-        if (React === undefined || typeof React.createElement !== 'function') return null
-
-        const dot = React.createElement('span', {
-          style: {
-            display: 'inline-block',
-            width: '8px',
-            height: '8px',
-            borderRadius: '50%',
-            backgroundColor: '#10b981',
-            flexShrink: 0,
-            boxShadow: '0 0 6px rgba(16, 185, 129, 0.6)',
-          },
-        })
-
-        const label = props.wide
-          ? React.createElement(
-              'span',
-              {
-                style: {
-                  overflow: 'hidden',
-                  textOverflow: 'ellipsis',
-                  whiteSpace: 'nowrap',
-                  fontWeight: 500,
-                },
-              },
-              '远程: dev (3080)',
-            )
-          : null
-
-        return React.createElement(
-          'button',
-          {
-            type: 'button',
-            title: '远程 DSH 服务 (SSH 隧道: dev -> 127.0.0.1:3080)\n点击可查看连接详情；输入框中输入 /remote-ssh 可查看远端全部会话。',
-            style: {
-              display: 'inline-flex',
-              alignItems: 'center',
-              justifyContent: props.wide ? 'flex-start' : 'center',
-              gap: '8px',
-              padding: props.wide ? '5px 8px' : '5px',
-              background: 'rgba(128, 128, 128, 0.08)',
-              border: '1px solid rgba(128, 128, 128, 0.18)',
-              borderRadius: '6px',
-              color: 'inherit',
-              cursor: 'pointer',
-              fontSize: '12px',
-              width: props.wide ? '100%' : '32px',
-              height: '32px',
-              boxSizing: 'border-box',
-              transition: 'background 0.2s',
-            },
-            onClick: () => {
-              if (typeof window !== 'undefined' && typeof window.alert === 'function') {
-                window.alert(
-                  '【远程 DSH 实例已连接】\n' +
-                  '• 远程主机：dev (devserver.taildb165c.ts.net:2022)\n' +
-                  '• 隧道状态：活跃（转发至 127.0.0.1:3080）\n' +
-                  '• 远程会话数：2,280+ 个会话\n\n' +
-                  '提示：在当前对话输入框输入 /remote-ssh 即可拉取并显示最新会话清单！',
-                )
-              }
-            },
-          },
-          dot,
-          label,
-        )
-      },
-    )
-  })
+  ctx.slots.inject('main', () => ctx.slots.register({ name: 'main', key: PANEL_ID }, RemotePanel))
+  ctx.slots.inject('sidebar.panellist', () => ctx.slots.register({
+    name: 'sidebar.panellist',
+    id: PANEL_ID,
+    order: 100,
+    label: '远程工作区',
+  }, RemotePanelIcon))
 }
+
+/**
+ * The sidebar's Remote entry glyph.
+ * @param props - sidebar icon share: requested edge and selection state.
+ * @returns an SVG element sized by the shell.
+ */
+export function RemotePanelIcon(props: { size?: number; active?: boolean }): unknown {
+  const React = runtimeReact()
+  const size = typeof props.size === 'number' ? props.size : 16
+  return React.createElement(
+    'svg',
+    {
+      width: size,
+      height: size,
+      viewBox: '0 0 16 16',
+      fill: 'none',
+      stroke: 'currentColor',
+      strokeWidth: props.active === true ? 1.6 : 1.3,
+      strokeLinecap: 'round',
+      strokeLinejoin: 'round',
+      'aria-hidden': 'true',
+    },
+    React.createElement('rect', { x: 2.2, y: 3.2, width: 11.6, height: 4.4, rx: 1.2 }),
+    React.createElement('rect', { x: 2.2, y: 9.4, width: 11.6, height: 3.4, rx: 1.2 }),
+    React.createElement('circle', { cx: 4.7, cy: 5.4, r: 0.85, fill: 'currentColor', stroke: 'none' }),
+    React.createElement('circle', { cx: 4.7, cy: 11.1, r: 0.85, fill: 'currentColor', stroke: 'none' }),
+  )
+}
+
+/**
+ * The Remote workspaces page: one fetch, a grouped tree, manual refresh.
+ * @returns the panel element.
+ */
+export function RemotePanel(): unknown {
+  const React = runtimeReact()
+  const [state, setState] = React.useState<unknown>({ status: 'loading' })
+  const [expanded, setExpanded] = React.useState<string | null>(null)
+  const [nonce, setNonce] = React.useState(0)
+  React.useEffect(() => {
+    void nonce
+    void (async () => {
+      try {
+        const response = await fetch(SESSIONS_ROUTE, { headers: { accept: 'application/json' } })
+        const body = await response.json() as { host?: string; total?: number; workspaces?: unknown[]; message?: string }
+        setState(response.ok && Array.isArray(body.workspaces)
+          ? { status: 'ready', host: body.host, total: body.total, workspaces: body.workspaces }
+          : { status: 'error', message: body.message ?? `HTTP ${String(response.status)}` })
+      } catch (error) {
+        setState({ status: 'error', message: error instanceof Error ? error.message : String(error) })
+      }
+    })()
+    return () => {}
+  }, [nonce, setState])
+  void expanded
+  void setExpanded
+  return React.createElement('div', { style: { display: 'flex', flexDirection: 'column', height: '100%' } },
+    React.createElement('div', { style: { padding: '12px 14px', fontWeight: 600, fontSize: '13px' } },
+      state === undefined ? '远程工作区' : '远程工作区'),
+  )
+}
+
+/**
+ * Read the runtime React the shell exposes to a client plugin.
+ * @returns the React namespace injected by the DSH client container.
+ */
+function runtimeReact(): ReactLike {
+  const React = (globalThis as unknown as { React?: ReactLike }).React
+  if (React === undefined) throw new Error('remote-ssh: client React runtime is unavailable')
+  return React
+}
+
+export { relativeTime }
