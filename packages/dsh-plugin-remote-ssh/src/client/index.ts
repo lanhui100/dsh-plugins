@@ -76,6 +76,7 @@ declare module '@deepseek-ai/cordis' {
     workspaces: RemoteSshClientModels['workspaces']
     sessions: RemoteSshClientModels['sessions']
     remote: { session: Record<string, unknown> }
+    'remote.session': Record<string, unknown>
   }
 }
 
@@ -84,7 +85,7 @@ declare module '@deepseek-ai/cordis' {
  * Workspace and Session client models plus the Remote session namespace this
  * half wraps.
  */
-export const inject = ['workspaces', 'sessions', 'remote']
+export const inject = ['workspaces', 'sessions', 'remote', 'remote.session']
 
 /**
  * Activate the integration: publish the remote snapshot into the official

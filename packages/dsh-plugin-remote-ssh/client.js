@@ -262,7 +262,7 @@ window.__ModuleLoader__.load({
     }
 
     exports.apply = apply
-    exports.inject = ['workspaces', 'sessions', 'remote']
+    exports.inject = ['workspaces', 'sessions', 'remote', 'remote.session']
     return module.exports
   },
 })
