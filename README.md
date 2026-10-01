@@ -15,8 +15,8 @@
   - 远端进程 Token 读取与 authority 绑定 Cookie 自动置换，隧道就绪即预热 (`remote.ts`)
   - 远端 `/api/session/list` 会话聚合 + 按 cwd 归并成"远程工作区" (`sessions.ts`)
   - 对话输入框 `/remote-ssh` 人类命令（`inject = ['commands']`）(`command.ts`)
-  - 只读面板数据路由 `GET /remote-ssh/sessions`（可选注入 `webServer`）(`route.ts`)
-  - 「远程工作区: \<host\>」面板：`sidebar.panellist` 图标 + `main` 面板，DSH 闭包工厂产物 (`client.js`，手工维护；`src/client/index.ts` 为类型真源)
+  - 只读面板数据路由 `GET /remote-ssh/sessions` 与 `GET /remote-ssh/session`（可选注入 `webServer`）(`route.ts`, `session-detail.ts`)
+  - 「远程工作区: \<host\>」面板：`sidebar.panellist` 图标 + `main` 面板，左侧展示远程工作区树（带搜索/折叠），右侧展示选中会话的真实历史对话记录与目标状态，DSH 闭包工厂产物 (`client.js`，手工维护；`src/client/index.ts` 为类型真源)
 
 ## 快速开始与验证
 

@@ -4,9 +4,13 @@ import type { Context } from '@deepseek-ai/cordis'
 import type { RemoteCaller } from './remote.ts'
 import { groupSessionsByWorkspace, listRemoteSessions } from './sessions.ts'
 import { projectRemoteSourceSnapshot } from './source.ts'
+import { getRemoteSessionDetail } from './session-detail.ts'
 
-/** Absolute pathname the browser panel fetches. */
+/** Absolute pathname the browser panel fetches for all workspaces and sessions. */
 export const SESSIONS_ROUTE = '/remote-ssh/sessions'
+
+/** Absolute pathname the browser panel fetches for a single session's details and messages. */
+export const SESSION_DETAIL_ROUTE = '/remote-ssh/session'
 
 /** The slice of the host web server this module registers against. */
 export interface WebServerLike {
@@ -81,5 +85,34 @@ export function registerRemoteSshRoute(
         }
       },
     }), 'remote-ssh: sessions route')
+
+    scoped.effect(() => scoped.webServer.register({
+      kind: 'exact',
+      path: SESSION_DETAIL_ROUTE,
+      handler: async (req, res) => {
+        const caller = getCaller()
+        if (caller === undefined) {
+          sendJson(res, 503, { error: 'tunnel-not-ready' })
+          return
+        }
+        const urlStr = typeof (req as { url?: string }).url === 'string'
+          ? (req as { url: string }).url
+          : '/'
+        const sessionId = new URL(urlStr, 'http://127.0.0.1').searchParams.get('id')
+        if (sessionId === null || sessionId.trim() === '') {
+          sendJson(res, 400, { error: 'missing-id', message: 'Query parameter "id" is required' })
+          return
+        }
+        try {
+          const detail = await getRemoteSessionDetail(caller, sessionId)
+          sendJson(res, 200, detail)
+        } catch (error) {
+          sendJson(res, 502, {
+            error: 'remote-unavailable',
+            message: error instanceof Error ? error.message : String(error),
+          })
+        }
+      },
+    }), 'remote-ssh: session detail route')
   })
 }

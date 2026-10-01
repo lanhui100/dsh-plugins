@@ -22,6 +22,9 @@ export const PANEL_ID = 'remote'
 /** Host route serving the workspace tree, same origin as the page. */
 export const SESSIONS_ROUTE = '/remote-ssh/sessions'
 
+/** Host route serving detailed session messages and projections. */
+export const SESSION_DETAIL_ROUTE = '/remote-ssh/session'
+
 /** Host slot declaration accepted by the client slot registry. */
 export interface ClientSlotRegistration {
   name: string

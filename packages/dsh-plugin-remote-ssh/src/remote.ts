@@ -26,8 +26,9 @@ function runSsh(host: string, remoteScript: string): Promise<string> {
   // Single-arg form: ssh joins the trailing args into one remote command
   // string that the far-side shell parses (pipes included). Splitting into
   // ['sh', '-c', script] breaks this: the pipe would bind outside -c.
+  // -n redirects stdin from /dev/null, preventing Windows OpenSSH from blocking.
   return new Promise((resolve, reject) => {
-    execFile('ssh', ['-o', 'BatchMode=yes', '-o', 'ConnectTimeout=10', host, remoteScript], {
+    execFile('ssh', ['-n', '-o', 'BatchMode=yes', '-o', 'ConnectTimeout=10', host, remoteScript], {
       maxBuffer: 64 * 1024, timeout: 20_000,
     }, (error, stdout) => {
       if (error !== null) reject(error)

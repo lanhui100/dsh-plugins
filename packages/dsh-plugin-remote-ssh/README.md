@@ -18,7 +18,7 @@
 - 经隧道调用远端 `/api/session/list`（携带换取的 Cookie 与 `_request` 参数信封），拉取远端全部会话（包括标题、运行状态、工作目录 cwd）。
 - Host 入口声明 `inject = ['commands']`（Cordis 在激活前解析服务；缺声明会让 `ctx.commands` 访问抛错、条目永不激活，在桌面还会连带清空用户 patch 层）。
 - Host 端注册 `/remote-ssh` 人令（在对话输入框输入即可列出远端会话）。
-- **远程工作区面板**：Host 注册只读路由 `GET /remote-ssh/sessions`（经 `ctx.inject(['webServer'])` 可选注入；缺 webServer 时条目照常激活，只是没有面板数据），返回 `{ host, total, workspaces[] }`；`workspaces` 按会话 `cwd` 聚合、按会话数排序、每组最多 50 条。Client 端以 `sidebar.panellist` 图标（id `remote`）+ `main` 面板（key `remote`）呈现「远程工作区: \<host\>」树，点「刷新」重新拉取。
+- **远程工作区面板与会话详情**：Host 注册只读路由 `GET /remote-ssh/sessions`（获取按 cwd 聚合的工作区与会话快照）与 `GET /remote-ssh/session?id=...`（通过 `session/projections` 与 `session/page` 实时拉取会话目标、统计与对话消息历史）。Client 端以 `sidebar.panellist` 图标（id `remote`）+ `main` 面板（key `remote`）呈现左侧远程工作区树（带搜索与折叠）和右侧完整会话对话流（展示 User 提问、Assistant 回复、工具调用与目标）。
 
 ## 产物与构建
 
@@ -53,7 +53,7 @@
 
 - 仅支持通过 OpenSSH 密钥免密登录的主机配置（如 `~/.ssh/config` 中的 `Host dev`）。
 - 远端 DSH 需要启动为 `dsh web` 模式并保留日志（默认 `/tmp/dsh-web.log`）。
-- 远端会话为**只读**：面板与命令只列出会话；点击打开 / 向远端发消息尚未实现。
-- `/remote-ssh/sessions` 由本地 webserver 直接服务，**不经过 `/api` 的浏览器鉴权围栏**：本机任意进程可读该 JSON；若把 webserver 绑到非回环地址，网络侧同样可读（只读、默认回环绑定）。详见 `.agents/notes/implemented/architecture/2026-09-30-remote-workspaces-panel.md`。
+- 远端会话当前为**只读查看**：支持点击树节点在会话区完整查看历史对话、工具调用与目标，但向远端会话继续发送消息（`session/prompt`）交互尚未实现。
+- `/remote-ssh/sessions` 与 `/remote-ssh/session` 由本地 webserver 直接服务，**不经过 `/api` 的浏览器鉴权围栏**：本机任意进程可读该 JSON；若把 webserver 绑到非回环地址，网络侧同样可读（只读、默认回环绑定）。详见 `.agents/notes/implemented/architecture/2026-09-30-remote-workspaces-panel.md`。
 - 面板数据是打开/刷新时的快照，无推送；每组最多显示 50 条会话。
 - `client.js` 为手工产物，无 sourcemap（扫描器容忍缺失）。

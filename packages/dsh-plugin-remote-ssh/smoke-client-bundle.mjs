@@ -18,6 +18,7 @@ const fakeReact = {
   createElement: (type, props, ...children) => ({ type, props, children }),
   useState: (initial) => [typeof initial === 'function' ? initial() : initial, () => {}],
   useEffect: () => {},
+  useMemo: (fn) => fn(),
 }
 globalThis.window = {
   __ModuleLoader__: {
