@@ -13,6 +13,17 @@ export { RemoteCaller, RemoteAuthError, readLaunchToken } from './remote.ts'
 export { listRemoteSessions, groupSessionsByWorkspace, type RemoteSessionItem, type RemoteWorkspaceGroup } from './sessions.ts'
 export { registerRemoteSshCommand } from './command.ts'
 export { registerRemoteSshRoute, SESSIONS_ROUTE } from './route.ts'
+export {
+  REMOTE_SOURCE_KIND,
+  namespaceRemoteId,
+  namespaceRemoteWorkspaceId,
+  projectRemoteSourceSnapshot,
+  RemoteWorkspaceSourceAdapter,
+  type RemoteSourceSession,
+  type RemoteSourceSnapshot,
+  type RemoteSourceWorkspace,
+  type RemoteWorkspaceSource,
+} from './source.ts'
 
 /**
  * Services this entry needs before `apply` runs.

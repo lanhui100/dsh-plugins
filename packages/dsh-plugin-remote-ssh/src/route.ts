@@ -3,6 +3,7 @@
 import type { Context } from '@deepseek-ai/cordis'
 import type { RemoteCaller } from './remote.ts'
 import { groupSessionsByWorkspace, listRemoteSessions } from './sessions.ts'
+import { projectRemoteSourceSnapshot } from './source.ts'
 
 /** Absolute pathname the browser panel fetches. */
 export const SESSIONS_ROUTE = '/remote-ssh/sessions'
@@ -65,10 +66,12 @@ export function registerRemoteSshRoute(
         }
         try {
           const items = await listRemoteSessions(caller)
+          const source = projectRemoteSourceSnapshot(hostLabel, items)
           sendJson(res, 200, {
             host: hostLabel,
             total: items.length,
             workspaces: groupSessionsByWorkspace(items),
+            source,
           })
         } catch (error) {
           sendJson(res, 502, {
