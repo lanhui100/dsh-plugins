@@ -9,10 +9,23 @@ export interface RemoteSessionItem {
   readonly blank: boolean
   readonly cwd: string
   readonly title?: string
+  readonly origin?: string
+  readonly parentSessionId?: string
+  readonly projections?: {
+    readonly kind?: string
+    readonly asOfSeq?: number
+    readonly values?: Record<string, unknown>
+  }
 }
 
 interface SessionListValue {
-  readonly items: readonly RemoteSessionItem[]
+  readonly items: readonly (RemoteSessionItem & {
+    readonly projections?: {
+      readonly kind?: string
+      readonly asOfSeq?: number
+      readonly values?: Record<string, unknown>
+    }
+  })[]
 }
 
 /**
@@ -30,18 +43,39 @@ export async function listRemoteSessions(
   if (!Array.isArray(items)) {
     throw new Error('remote-ssh: remote session/list returned no items array')
   }
-  return items.map((item) => ({
-    sessionId: String(item.sessionId),
-    updatedAt: Number(item.updatedAt),
-    running: Boolean(item.running),
-    blank: Boolean(item.blank),
-    cwd: String(item.cwd),
-    title: typeof item.title === 'string'
+  return items.map((item) => {
+    const rawProj = item.projections
+    let prunedProj: { readonly kind?: string; readonly asOfSeq?: number; readonly values?: Record<string, unknown> } | undefined
+    if (rawProj && typeof rawProj === 'object' && rawProj.values && typeof rawProj.values === 'object') {
+      const v: Record<string, unknown> = {}
+      if (rawProj.values.title !== undefined) v.title = rawProj.values.title
+      if (rawProj.values.subagentCatalog !== undefined) v.subagentCatalog = rawProj.values.subagentCatalog
+      if (rawProj.values.agentTeam !== undefined) v.agentTeam = rawProj.values.agentTeam
+      if (rawProj.values.subagent !== undefined) v.subagent = rawProj.values.subagent
+      if (rawProj.values.modelSelection !== undefined) v.modelSelection = rawProj.values.modelSelection
+      prunedProj = {
+        kind: typeof rawProj.kind === 'string' ? rawProj.kind : 'cached',
+        asOfSeq: typeof rawProj.asOfSeq === 'number' ? rawProj.asOfSeq : undefined,
+        values: v,
+      }
+    }
+    const rawTitle = typeof item.title === 'string'
       ? item.title
-      : typeof (item as { projections?: { values?: { title?: unknown } } }).projections?.values?.title === 'string'
-        ? (item as { projections: { values: { title: string } } }).projections.values.title
-        : undefined,
-  }))
+      : typeof rawProj?.values?.title === 'string'
+        ? rawProj.values.title
+        : undefined
+    return {
+      sessionId: String(item.sessionId),
+      updatedAt: Number(item.updatedAt),
+      running: Boolean(item.running),
+      blank: Boolean(item.blank),
+      cwd: String(item.cwd),
+      title: rawTitle,
+      origin: typeof item.origin === 'string' ? item.origin : undefined,
+      parentSessionId: typeof item.parentSessionId === 'string' ? item.parentSessionId : undefined,
+      projections: prunedProj,
+    }
+  })
 }
 
 /** One remote working directory with the sessions that ran in it. */
@@ -90,6 +124,10 @@ export function groupSessionsByWorkspace(
 
   for (const item of items) {
     if (validWorkspaces !== undefined && !validWorkspaces.has(item.cwd)) {
+      continue
+    }
+    // Subagents must never be grouped under workspace folders directly.
+    if (item.origin === 'subagent') {
       continue
     }
     const bucket = groups.get(item.cwd)

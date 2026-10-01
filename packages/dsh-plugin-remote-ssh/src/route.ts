@@ -66,6 +66,8 @@ export function registerRemoteSshRoute(
   getCaller: () => RemoteCaller | undefined,
   hostLabel: string,
 ): void {
+  const subagentParents = new Map<string, string>()
+
   ctx.inject(['webServer'], (scoped) => {
     scoped.effect(() => scoped.webServer.register({
       kind: 'exact',
@@ -91,10 +93,22 @@ export function registerRemoteSshRoute(
           const archivedSessionIds = baseline?.archivedSessionIds ?? []
           const pinnedSessionIds = baseline?.pinnedSessionIds ?? []
           const source = projectRemoteSourceSnapshot(hostLabel, items)
+
+          const validSessions = validMap !== undefined
+            ? items.filter((it) => validMap.has(it.cwd))
+            : items
+
+          for (const it of items) {
+            if (it.origin === 'subagent' && it.parentSessionId) {
+              subagentParents.set(it.sessionId, it.parentSessionId)
+            }
+          }
+
           sendJson(res, 200, {
             host: hostLabel,
             total: items.length,
             workspaces,
+            sessions: validSessions,
             archivedSessionIds,
             pinnedSessionIds,
             source,
@@ -149,27 +163,67 @@ export function registerRemoteSshRoute(
         const urlStr = typeof (req as { url?: string }).url === 'string'
           ? (req as { url: string }).url
           : '/'
-        const sessionId = new URL(urlStr, 'http://127.0.0.1').searchParams.get('id')
+        const url = new URL(urlStr, 'http://127.0.0.1')
+        const sessionId = url.searchParams.get('id')
+        const queryParentId = url.searchParams.get('parentId')
         if (sessionId === null || sessionId.trim() === '') {
           sendJson(res, 400, { error: 'missing-id', message: 'Query parameter "id" is required' })
           return
         }
+        let resolvedParentId = (queryParentId && queryParentId.trim() !== '')
+          ? queryParentId.trim()
+          : subagentParents.get(sessionId)
+
         try {
           const proj = await caller.invoke<{ asOfSeq?: number; values?: unknown }>(
             'session/projections',
             { request: { sessionId } },
           )
           const asOfSeq = typeof proj?.asOfSeq === 'number' ? proj.asOfSeq : 0
-          const page = asOfSeq > 0
-            ? await caller.invoke<{ records?: readonly unknown[]; hasMore?: boolean }>(
-              'session/page',
-              { request: { address: { kind: 'session', sessionId }, throughSeq: asOfSeq, maxMessages: 200 } },
-            )
-            : undefined
+          let page: { records?: readonly unknown[]; hasMore?: boolean } | undefined
+
+          if (asOfSeq > 0) {
+            const makeAddress = (pId?: string) => (pId !== undefined
+              ? { kind: 'subagent', parentSessionId: pId, childSessionId: sessionId, mode: 'unknown' }
+              : { kind: 'session', sessionId })
+
+            try {
+              page = await caller.invoke<{ records?: readonly unknown[]; hasMore?: boolean }>(
+                'session/page',
+                { request: { address: makeAddress(resolvedParentId), throughSeq: asOfSeq, maxMessages: 200 } },
+              )
+            } catch (pageErr) {
+              const msg = String(pageErr)
+              if (resolvedParentId === undefined && msg.includes('subagent Sessions require their durable parent address')) {
+                const subVal = (proj?.values as Record<string, unknown> | undefined)?.subagent as
+                  { parentSessionId?: string } | undefined
+                const fallbackParent = subVal?.parentSessionId
+                if (fallbackParent) {
+                  resolvedParentId = fallbackParent
+                  subagentParents.set(sessionId, fallbackParent)
+                  page = await caller.invoke<{ records?: readonly unknown[]; hasMore?: boolean }>(
+                    'session/page',
+                    { request: { address: makeAddress(fallbackParent), throughSeq: asOfSeq, maxMessages: 200 } },
+                  )
+                } else {
+                  throw pageErr
+                }
+              } else {
+                throw pageErr
+              }
+            }
+          }
+
           sendJson(res, 200, {
             sessionId,
             asOfSeq,
-            header: { version: 0, id: sessionId, createdAt: Date.now(), isSeeded: false },
+            header: {
+              version: 0,
+              id: sessionId,
+              createdAt: Date.now(),
+              isSeeded: false,
+              ...(resolvedParentId !== undefined ? { origin: 'subagent', parentSession: resolvedParentId } : {}),
+            },
             projections: (proj?.values as Record<string, unknown> | undefined) ?? {},
             records: page?.records ?? [],
             hasMore: page?.hasMore === true,

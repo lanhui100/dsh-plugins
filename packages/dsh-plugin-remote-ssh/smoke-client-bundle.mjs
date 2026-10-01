@@ -22,27 +22,80 @@ globalThis.window = {
   },
 }
 
-globalThis.fetch = async () => ({
-  ok: true,
-  status: 200,
-  json: async () => ({
-    host: 'dev',
-    total: 1,
-    archivedSessionIds: ['session-demo-1'],
-    workspaces: [{
-      cwd: '/tmp/demo',
-      name: 'demo',
-      sessions: [{
-        sessionId: 'session-demo-1',
-        title: 'Demo remote session',
-        running: false,
-        blank: false,
-        cwd: '/tmp/demo',
-        updatedAt: 1_700_000_000_000,
-      }],
-    }],
-  }),
-})
+const requestedUrls = []
+globalThis.fetch = async (url) => {
+  const urlStr = String(url)
+  requestedUrls.push(urlStr)
+  if (urlStr.includes('/remote-ssh/sessions')) {
+    return {
+      ok: true,
+      status: 200,
+      json: async () => ({
+        host: 'dev',
+        total: 2,
+        archivedSessionIds: ['session-demo-1'],
+        workspaces: [{
+          cwd: '/tmp/demo',
+          name: 'demo',
+          sessions: [{
+            sessionId: 'session-demo-1',
+            title: 'Demo remote session',
+            running: false,
+            blank: false,
+            cwd: '/tmp/demo',
+            updatedAt: 1_700_000_000_000,
+          }],
+        }],
+        sessions: [
+          {
+            sessionId: 'session-demo-1',
+            title: 'Demo remote session',
+            running: false,
+            blank: false,
+            cwd: '/tmp/demo',
+            updatedAt: 1_700_000_000_000,
+            projections: {
+              kind: 'cached',
+              asOfSeq: 10,
+              values: {
+                title: 'Demo remote session',
+                subagentCatalog: [{ id: 'subagent-child-1', label: 'Auditor Child', mode: 'continuable' }],
+                agentTeam: { members: [{ id: 'session-demo-1', role: 'lead' }, { id: 'subagent-child-1', role: 'teammate' }] },
+              },
+            },
+          },
+          {
+            sessionId: 'subagent-child-1',
+            title: 'Auditor Child',
+            running: true,
+            blank: false,
+            cwd: '/tmp/demo',
+            updatedAt: 1_700_000_000_001,
+            origin: 'subagent',
+            parentSessionId: 'session-demo-1',
+          },
+        ],
+      }),
+    }
+  }
+  return {
+    ok: true,
+    status: 200,
+    json: async () => ({
+      sessionId: urlStr.includes('subagent-child-1') ? 'subagent-child-1' : 'session-demo-1',
+      asOfSeq: 1,
+      header: {
+        version: 0,
+        id: urlStr.includes('subagent-child-1') ? 'subagent-child-1' : 'session-demo-1',
+        createdAt: Date.now(),
+        isSeeded: false,
+      },
+      projections: {},
+      records: [{ seq: 1, type: 'message' }],
+      hasMore: false,
+    }),
+  }
+}
 
 // A browser evaluates the script purely to register the factory.
 new Function(source)()
@@ -158,6 +211,24 @@ await new Promise((resolve) => setTimeout(resolve, 20))
 console.log(`upserted workspaces: ${upserted.length} (${upserted[0]?.title})`)
 console.log(`added sessions: ${addedSessions.length} (${addedSessions[0]?.id})`)
 
+// Workspace session list contract test: subagent sessions must NOT be in workspace view sessionIds!
+assert.deepEqual(
+  upserted[0]?.sessionIds,
+  ['session-demo-1'],
+  'Workspace view sessionIds must only contain root sessions, never subagents',
+)
+
+// Session registry contract test: subagent sessions must be added with origin and parentId
+const subSession = addedSessions.find((s) => s.id === 'subagent-child-1')
+assert.ok(subSession, 'Subagent session must be added into sessions registry for header views')
+assert.equal(subSession.origin, 'subagent', 'Subagent session must have origin="subagent"')
+assert.equal(subSession.parentId, 'session-demo-1', 'Subagent session must have parentId matching its parent')
+
+// Parent session projections test: subagentCatalog and agentTeam must be preserved
+const rootSession = addedSessions.find((s) => s.id === 'session-demo-1')
+assert.ok(rootSession?.projections?.values?.subagentCatalog, 'Parent session must pass subagentCatalog projection')
+assert.ok(rootSession?.projections?.values?.agentTeam, 'Parent session must pass agentTeam projection')
+
 // Title format contract test: must be "<host> : <name>" without "远程".
 assert.equal(
   upserted[0]?.title,
@@ -201,6 +272,17 @@ const remotePage = await pluginCtx.remote.session.page(
   null,
 )
 console.log(`remote page ok=${remotePage.ok} records=${remotePage.value?.records?.length}`)
+
+// Subagent remote branch: page for subagent address passes parentId query param!
+const subagentPage = await pluginCtx.remote.session.page(
+  { address: { kind: 'subagent', parentSessionId: 'session-demo-1', childSessionId: 'subagent-child-1', mode: 'unknown' }, throughSeq: 1 },
+  null,
+)
+assert.ok(subagentPage.ok, 'Subagent page request must succeed via remote proxy')
+assert.ok(
+  requestedUrls.some((u) => u.includes('id=subagent-child-1') && u.includes('parentId=session-demo-1')),
+  'Subagent page request must pass parentId to raw route',
+)
 
 // Local branch: an unknown id passes through to the original getter.
 const localPage = await pluginCtx.remote.session.page({ sessionId: 'session-local-x' }, null)

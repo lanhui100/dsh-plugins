@@ -32,6 +32,13 @@ export interface RemoteSessionRow {
   readonly blank: boolean
   readonly cwd: string
   readonly updatedAt: number
+  readonly origin?: string
+  readonly parentSessionId?: string
+  readonly projections?: {
+    readonly kind?: string
+    readonly asOfSeq?: number
+    readonly values?: Record<string, unknown>
+  }
 }
 
 /** One remote workspace group as served by `SESSIONS_ROUTE`. */
@@ -73,6 +80,14 @@ export interface RemoteSshClientModels {
       readonly running: boolean
       readonly blank: boolean
       readonly updatedAt: number
+      readonly origin?: string
+      readonly parentId?: string
+      readonly parentSessionId?: string
+      readonly projections?: {
+        readonly kind?: string
+        readonly asOfSeq?: number
+        readonly values?: Record<string, unknown>
+      }
       readonly retainedBy: Record<string, never>
     }): void
     handleSessionRemoved(sessionId: string): void

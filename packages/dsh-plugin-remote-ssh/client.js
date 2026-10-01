@@ -38,18 +38,22 @@ window.__ModuleLoader__.load({
     let remoteArchivedSessionIds = new Set()
     /** Currently injected synthetic remote workspace ids, for diffing and teardown. */
     let injectedWorkspaceIds = new Set()
+    /** Map of child subagent session id -> parent session id. */
+    const sessionParents = new Map()
 
-    /** Resolve a session id from an official `ctx.remote.session.*` request argument list. */
-    function sessionIdOfRequest(args) {
+    /** Resolve target session id and parent id from an official `ctx.remote.session.*` request argument list. */
+    function sessionTargetOfRequest(args) {
       const req = args && args[0]
-      if (!req || typeof req !== 'object') return undefined
+      if (!req || typeof req !== 'object') return { id: undefined, parentId: undefined }
       const address = req.address
       if (address && typeof address === 'object') {
-        if (address.kind === 'session' && address.sessionId) return address.sessionId
-        const id = address.sessionId || address.childSessionId
-        if (id) return id
+        if (address.kind === 'session' && address.sessionId) return { id: address.sessionId, parentId: undefined }
+        if (address.childSessionId) return { id: address.childSessionId, parentId: address.parentSessionId }
+        if (address.sessionId) return { id: address.sessionId, parentId: undefined }
       }
-      return req.sessionId || undefined
+      const id = req.sessionId || undefined
+      const parentId = req.parentSessionId || (id !== undefined ? sessionParents.get(id) : undefined)
+      return { id, parentId }
     }
 
     /** Truncate long host aliases so titles remain clean in narrow sidebars. */
@@ -164,6 +168,7 @@ window.__ModuleLoader__.load({
       remoteSessionIds.clear()
       remoteArchivedSessionIds.clear()
       injectedWorkspaceIds = new Set()
+      sessionParents.clear()
     }
 
     /** Pull the remote snapshot and publish it into the official client models. */
@@ -191,10 +196,18 @@ window.__ModuleLoader__.load({
         Array.isArray(body.archivedSessionIds) ? body.archivedSessionIds.map(String) : []
       )
 
+      const allSessions = Array.isArray(body.sessions) ? body.sessions : []
+      sessionParents.clear()
+      for (const s of allSessions) {
+        if (s && s.sessionId && s.parentSessionId) {
+          sessionParents.set(String(s.sessionId), String(s.parentSessionId))
+        }
+      }
+
       for (const ws of body.workspaces) {
         if (!ws || typeof ws.cwd !== 'string') continue
+        // Root workspace view only lists direct sessions (subagents excluded)
         const sessionIds = (ws.sessions || []).map((s) => String(s.sessionId))
-        for (const id of sessionIds) nextSessionIds.add(id)
         const workspaceId = `remote:${ws.cwd}`
         // Format: <远程主机名> : <工作区文件夹名称> (no "远程" word)
         const title = `${displayHost} : ${ws.name}`
@@ -206,20 +219,32 @@ window.__ModuleLoader__.load({
           createdAt: new Date().toISOString(),
           updatedAt: new Date().toISOString(),
         })
-        for (const s of ws.sessions || []) {
-          const id = String(s.sessionId)
-          nextSessions.push({
-            id,
-            sessionId: id,
-            title: typeof s.title === 'string' ? s.title : undefined,
-            displayTitle: typeof s.title === 'string' && s.title !== '' ? s.title : id,
-            cwd: typeof s.cwd === 'string' ? s.cwd : undefined,
-            running: Boolean(s.running),
-            blank: Boolean(s.blank),
-            updatedAt: typeof s.updatedAt === 'number' ? s.updatedAt : Date.now(),
-            retainedBy: {},
-          })
-        }
+      }
+
+      // Populate full session list into ctx.sessions (including subagents and projections)
+      const sourceSessions = allSessions.length > 0
+        ? allSessions
+        : (body.workspaces || []).flatMap((ws) => ws.sessions || [])
+
+      for (const s of sourceSessions) {
+        if (!s || !s.sessionId) continue
+        const id = String(s.sessionId)
+        nextSessionIds.add(id)
+        nextSessions.push({
+          id,
+          sessionId: id,
+          title: typeof s.title === 'string' ? s.title : undefined,
+          displayTitle: typeof s.title === 'string' && s.title !== '' ? s.title : id,
+          cwd: typeof s.cwd === 'string' ? s.cwd : undefined,
+          running: Boolean(s.running),
+          blank: Boolean(s.blank),
+          updatedAt: typeof s.updatedAt === 'number' ? s.updatedAt : Date.now(),
+          origin: typeof s.origin === 'string' ? s.origin : undefined,
+          parentSessionId: typeof s.parentSessionId === 'string' ? s.parentSessionId : undefined,
+          parentId: typeof s.parentSessionId === 'string' ? s.parentSessionId : undefined,
+          projections: s.projections,
+          retainedBy: {},
+        })
       }
 
       cachedWorkspaceViews = [...nextWorkspaceViews.values()]
@@ -277,8 +302,10 @@ window.__ModuleLoader__.load({
       }
       const isRemote = (id) => id !== undefined && remoteSessionIds.has(id)
 
-      async function remoteFetchRaw(id, signal) {
-        const res = await fetch(`${SESSION_RAW_ROUTE}?id=${encodeURIComponent(id)}`, {
+      async function remoteFetchRaw(id, signal, parentId) {
+        const resolvedParent = parentId || sessionParents.get(id)
+        const parentQuery = resolvedParent ? `&parentId=${encodeURIComponent(resolvedParent)}` : ''
+        const res = await fetch(`${SESSION_RAW_ROUTE}?id=${encodeURIComponent(id)}${parentQuery}`, {
           headers: { accept: 'application/json' },
           signal,
         })
@@ -291,32 +318,38 @@ window.__ModuleLoader__.load({
 
       const wrap = {
         page: (...args) => {
-          const id = sessionIdOfRequest(args)
+          const { id, parentId } = sessionTargetOfRequest(args)
           if (!isRemote(id)) return originalCall('page', args)
-          return remoteFetchRaw(id, args[1])
+          return remoteFetchRaw(id, args[1], parentId)
             .then((raw) => ({ ok: true, value: { records: raw.records || [], hasMore: !!raw.hasMore } }))
             .catch((error) => ({ ok: false, error }))
         },
         projections: (...args) => {
-          const id = sessionIdOfRequest(args)
+          const { id, parentId } = sessionTargetOfRequest(args)
           if (!isRemote(id)) return originalCall('projections', args)
-          return remoteFetchRaw(id, args[1])
+          return remoteFetchRaw(id, args[1], parentId)
             .then((raw) => ({ ok: true, value: { asOfSeq: raw.asOfSeq || 0, values: raw.projections || {} } }))
             .catch((error) => ({ ok: false, error }))
         },
         follow: async function* (...args) {
-          const id = sessionIdOfRequest(args)
+          const { id, parentId } = sessionTargetOfRequest(args)
           if (!isRemote(id)) {
             yield* originalCall('follow', args)
             return
           }
-          const raw = await remoteFetchRaw(id, args[1])
+          const raw = await remoteFetchRaw(id, args[1], parentId)
           // One static snapshot opens the official journal; the stream then
           // stays parked until the caller cancels. Live deltas come in a
           // later milestone that relays the remote follow stream itself.
           yield {
             type: 'snapshot',
-            header: raw.header || { version: 0, id, createdAt: Date.now(), isSeeded: false },
+            header: raw.header || {
+              version: 0,
+              id,
+              createdAt: Date.now(),
+              isSeeded: false,
+              ...(parentId !== undefined ? { origin: 'subagent', parentSession: parentId } : {}),
+            },
             cursor: raw.asOfSeq || 0,
             records: raw.records || [],
             hasMore: false,
@@ -330,22 +363,22 @@ window.__ModuleLoader__.load({
           })
         },
         prompt: (...args) => {
-          const id = sessionIdOfRequest(args)
+          const { id } = sessionTargetOfRequest(args)
           if (!isRemote(id)) return originalCall('prompt', args)
           return Promise.resolve({ ok: false, error: new Error('remote-ssh: 远端会话续写尚未接通（当前只读里程碑）') })
         },
         cancel: (...args) => {
-          const id = sessionIdOfRequest(args)
+          const { id } = sessionTargetOfRequest(args)
           if (!isRemote(id)) return originalCall('cancel', args)
           return Promise.resolve({ ok: false, error: new Error('remote-ssh: 远端会话停止尚未接通（当前只读里程碑）') })
         },
         rename: (...args) => {
-          const id = sessionIdOfRequest(args)
+          const { id } = sessionTargetOfRequest(args)
           if (!isRemote(id)) return originalCall('rename', args)
           return Promise.resolve({ ok: false, error: new Error('remote-ssh: 远端会话重命名尚未接通（当前只读里程碑）') })
         },
         attachment: (...args) => {
-          const id = sessionIdOfRequest(args)
+          const { id } = sessionTargetOfRequest(args)
           if (!isRemote(id)) return originalCall('attachment', args)
           return Promise.resolve({ ok: false, error: new Error('remote-ssh: 远端会话图片读取尚未接通') })
         },
