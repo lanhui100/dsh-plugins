@@ -12,6 +12,14 @@ export const SESSIONS_ROUTE = '/remote-ssh/sessions'
 /** Absolute pathname the browser panel fetches for a single session's details and messages. */
 export const SESSION_DETAIL_ROUTE = '/remote-ssh/session'
 
+/**
+ * Absolute pathname serving the raw wire projection and event records of one
+ * remote session, exactly as the remote `session/projections` + `session/page`
+ * RPCs return them, so the official SessionEventStream / ConversationNodeAssembler
+ * can consume the history natively.
+ */
+export const SESSION_RAW_ROUTE = '/remote-ssh/session-raw'
+
 /** The slice of the host web server this module registers against. */
 export interface WebServerLike {
   register(route: {
@@ -114,5 +122,51 @@ export function registerRemoteSshRoute(
         }
       },
     }), 'remote-ssh: session detail route')
+
+    scoped.effect(() => scoped.webServer.register({
+      kind: 'exact',
+      path: SESSION_RAW_ROUTE,
+      handler: async (req, res) => {
+        const caller = getCaller()
+        if (caller === undefined) {
+          sendJson(res, 503, { error: 'tunnel-not-ready' })
+          return
+        }
+        const urlStr = typeof (req as { url?: string }).url === 'string'
+          ? (req as { url: string }).url
+          : '/'
+        const sessionId = new URL(urlStr, 'http://127.0.0.1').searchParams.get('id')
+        if (sessionId === null || sessionId.trim() === '') {
+          sendJson(res, 400, { error: 'missing-id', message: 'Query parameter "id" is required' })
+          return
+        }
+        try {
+          const proj = await caller.invoke<{ asOfSeq?: number; values?: unknown }>(
+            'session/projections',
+            { request: { sessionId } },
+          )
+          const asOfSeq = typeof proj?.asOfSeq === 'number' ? proj.asOfSeq : 0
+          const page = asOfSeq > 0
+            ? await caller.invoke<{ records?: readonly unknown[]; hasMore?: boolean }>(
+              'session/page',
+              { request: { address: { kind: 'session', sessionId }, throughSeq: asOfSeq, maxMessages: 200 } },
+            )
+            : undefined
+          sendJson(res, 200, {
+            sessionId,
+            asOfSeq,
+            header: { version: 0, id: sessionId, createdAt: Date.now(), isSeeded: false },
+            projections: (proj?.values as Record<string, unknown> | undefined) ?? {},
+            records: page?.records ?? [],
+            hasMore: page?.hasMore === true,
+          })
+        } catch (error) {
+          sendJson(res, 502, {
+            error: 'remote-unavailable',
+            message: error instanceof Error ? error.message : String(error),
+          })
+        }
+      },
+    }), 'remote-ssh: session raw route')
   })
 }

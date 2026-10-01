@@ -5,7 +5,7 @@
  * registered handlers with minimal response doubles.
  */
 
-import { RemoteCaller, registerRemoteSshRoute, SESSIONS_ROUTE, SESSION_DETAIL_ROUTE } from './lib/index.js'
+import { RemoteCaller, registerRemoteSshRoute, SESSIONS_ROUTE, SESSION_DETAIL_ROUTE, SESSION_RAW_ROUTE } from './lib/index.js'
 
 const baseUrl = process.env.REMOTE_SSH_BASE_URL ?? 'http://127.0.0.1:39387'
 const caller = new RemoteCaller({ host: process.env.REMOTE_SSH_HOST ?? 'dev', baseUrl, requestTimeoutMs: 30_000 })
@@ -59,4 +59,19 @@ if (sampleSession?.sessionId) {
   console.log(`session detail status: ${captured.status} in ${Date.now() - started} ms`)
   const detail = JSON.parse(captured.body)
   console.log(`  detail title: "${detail.title}" messages: ${detail.messages?.length ?? 0}`)
+}
+
+// 3. Test raw wire route (the one the official conversation stream consumes)
+const rawRoute = routes.get(SESSION_RAW_ROUTE)
+if (!rawRoute) throw new Error(`missing route: ${SESSION_RAW_ROUTE}`)
+
+if (sampleSession?.sessionId) {
+  captured = { status: 0, body: '' }
+  started = Date.now()
+  await rawRoute.handler({ url: `${SESSION_RAW_ROUTE}?id=${sampleSession.sessionId}` }, res)
+  console.log(`session raw status: ${captured.status} in ${Date.now() - started} ms`)
+  const raw = JSON.parse(captured.body)
+  const eventTypes = new Set((raw.records || []).map((r) => r.event?.type))
+  console.log(`  asOfSeq: ${raw.asOfSeq} records: ${raw.records?.length ?? 0}`)
+  console.log(`  wire event types: ${[...eventTypes].slice(0, 6).join(', ')}${eventTypes.size > 6 ? ', …' : ''}`)
 }

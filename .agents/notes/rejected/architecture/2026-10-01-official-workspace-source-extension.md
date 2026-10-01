@@ -1,6 +1,6 @@
 # Agent Note: Official Workspace UI requires a core source extension
 
-Status: proposed
+Status: rejected — superseded by official-model injection and session-namespace proxy (2026-10-01-reuse-official-workspace-session-ui.md)
 
 ## Problem
 
