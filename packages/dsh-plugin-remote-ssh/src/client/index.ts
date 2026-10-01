@@ -43,8 +43,12 @@ declare module '@deepseek-ai/cordis' {
   }
 }
 
-/** Services the client entry needs before `apply` runs. */
-export const inject = ['slots', 'layout']
+/**
+ * Services the client entry needs before `apply` runs.
+ * The shell owns the sidebar button and dispatches the `main` panel by id, so
+ * the slot registry is the only edge this half needs.
+ */
+export const inject = ['slots']
 
 /**
  * Coarse relative age of a millisecond timestamp.

@@ -286,7 +286,7 @@ window.__ModuleLoader__.load({
     }
 
     exports.apply = apply
-    exports.inject = ['slots', 'layout']
+    exports.inject = ['slots']
     return module.exports
   },
 })
