@@ -14,6 +14,7 @@ import {
   SESSION_PROMPT_ROUTE,
   SESSION_CANCEL_ROUTE,
   SESSION_FOLLOW_ROUTE,
+  SESSION_CREATE_ROUTE,
 } from './lib/index.js'
 
 const baseUrl = process.env.REMOTE_SSH_BASE_URL ?? 'http://127.0.0.1:39387'
@@ -146,5 +147,24 @@ if (sampleSession?.sessionId) {
   if (chunks.length > 0) {
     console.log(`  first sse chunk: ${chunks[0].slice(0, 100)}...`)
   }
+}
+
+// 7. Test create session route
+const createRoute = routes.get(SESSION_CREATE_ROUTE)
+if (!createRoute) throw new Error(`missing route: ${SESSION_CREATE_ROUTE}`)
+const sampleWs = parsed.workspaces[0]
+if (sampleWs?.cwd) {
+  captured = { status: 0, body: '' }
+  const mockReq = {
+    on(ev, cb) {
+      if (ev === 'data') cb(Buffer.from(JSON.stringify({ workspaceId: `remote:${sampleWs.cwd}` })))
+      if (ev === 'end') cb()
+    },
+  }
+  await createRoute.handler(mockReq, res)
+  console.log(`create route status: ${captured.status} body: ${captured.body}`)
+  const createJson = JSON.parse(captured.body)
+  if (typeof createJson.ok !== 'boolean') throw new Error('create route must return ok boolean')
+  if (createJson.ok && !createJson.value?.sessionId) throw new Error('create route must return sessionId on success')
 }
 

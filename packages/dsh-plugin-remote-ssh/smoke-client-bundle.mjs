@@ -92,6 +92,13 @@ globalThis.fetch = async (url) => {
       json: async () => ({ ok: true, value: { accepted: true } }),
     }
   }
+  if (urlStr.includes('/remote-ssh/create')) {
+    return {
+      ok: true,
+      status: 200,
+      json: async () => ({ ok: true, value: { sessionId: 'session-remote-new-1', agentPreset: 'standard' } }),
+    }
+  }
   if (urlStr.includes('/remote-ssh/session-follow')) {
     const sseText = 'data: ' + JSON.stringify({ type: 'snapshot', cursor: 42, records: [{ seq: 1 }] }) + '\n\ndata: ' + JSON.stringify({ type: 'assistant-stream', frame: { revision: 1 } }) + '\n\n'
     const encoder = new TextEncoder()
@@ -161,7 +168,7 @@ class RemoteService extends Service {
 class RemoteSessionService extends Service {
   constructor(ctx) {
     super(ctx, 'remote.session')
-    for (const method of ['page', 'follow', 'projections', 'prompt', 'cancel', 'rename', 'attachment']) {
+    for (const method of ['page', 'follow', 'projections', 'prompt', 'cancel', 'rename', 'attachment', 'create']) {
       Object.defineProperty(this, method, {
         configurable: true,
         enumerable: true,
@@ -346,6 +353,20 @@ const localPrompt = await pluginCtx.remote.session.prompt({ sessionId: 'session-
 assert.equal(localPrompt.value?.method, 'prompt', 'Local prompt must pass through')
 const localCancel = await pluginCtx.remote.session.cancel({ sessionId: 'session-local-x' })
 assert.equal(localCancel.value?.method, 'cancel', 'Local cancel must pass through')
+
+// Remote branch: create forwards to /remote-ssh/create and registers new sessionId
+const createRes = await pluginCtx.remote.session.create({ workspaceId: 'remote:/tmp/demo' })
+assert.ok(createRes.ok, 'Remote create request must succeed')
+assert.equal(createRes.value?.sessionId, 'session-remote-new-1', 'Remote create must return sessionId')
+assert.ok(requestedUrls.some((u) => u.includes('/remote-ssh/create')), 'Create must hit /remote-ssh/create')
+
+// Newly created session is immediately recognized as remote
+const newSessionPage = await pluginCtx.remote.session.page({ sessionId: 'session-remote-new-1' }, null)
+assert.ok(newSessionPage.ok, 'Newly created remote session must route to remote page')
+
+// Local branch: create passes through to original getter
+const localCreate = await pluginCtx.remote.session.create({ workspaceId: 'local-workspace-1' })
+assert.equal(localCreate.value?.method, 'create', 'Local create must pass through')
 
 // Follow remote branch yields streamed frames (snapshot, then delta notification).
 const iterator = pluginCtx.remote.session.follow({ address: { kind: 'session', sessionId: 'session-demo-1' } }, null)

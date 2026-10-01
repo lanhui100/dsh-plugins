@@ -29,6 +29,9 @@ export const SESSION_CANCEL_ROUTE = '/remote-ssh/cancel'
 /** Absolute pathname for streaming remote session follow frames via SSE. */
 export const SESSION_FOLLOW_ROUTE = '/remote-ssh/session-follow'
 
+/** Absolute pathname for creating a new session in a remote workspace. */
+export const SESSION_CREATE_ROUTE = '/remote-ssh/create'
+
 /** The slice of the host web server this module registers against. */
 export interface WebServerLike {
   register(route: {
@@ -92,6 +95,7 @@ export function registerRemoteSshRoute(
   hostLabel: string,
 ): void {
   const subagentParents = new Map<string, string>()
+  const pathToRemoteWorkspaceId = new Map<string, string>()
 
   ctx.inject(['webServer'], (scoped) => {
     scoped.effect(() => scoped.webServer.register({
@@ -111,6 +115,11 @@ export function registerRemoteSshRoute(
               return undefined
             }),
           ])
+          if (baseline !== undefined) {
+            for (const it of baseline.items) {
+              pathToRemoteWorkspaceId.set(it.path, it.workspaceId)
+            }
+          }
           const validMap = baseline !== undefined
             ? new Map(baseline.items.map((it) => [it.path, { workspaceId: it.workspaceId, title: it.title }]))
             : undefined
@@ -403,5 +412,58 @@ export function registerRemoteSshRoute(
         }
       },
     }), 'remote-ssh: session follow route')
+
+    scoped.effect(() => scoped.webServer.register({
+      kind: 'exact',
+      path: SESSION_CREATE_ROUTE,
+      handler: async (req, res) => {
+        const caller = getCaller()
+        if (caller === undefined) {
+          sendJson(res, 503, { ok: false, error: { message: 'tunnel-not-ready' } })
+          return
+        }
+        try {
+          const body = await readJsonBody(req)
+          let targetCwd = typeof body.cwd === 'string' ? body.cwd : undefined
+          let targetWsId = typeof body.workspaceId === 'string' ? body.workspaceId : undefined
+
+          if (targetWsId && targetWsId.startsWith('remote:')) {
+            targetCwd = targetWsId.slice('remote:'.length)
+            targetWsId = undefined
+          }
+
+          let realWsId: string | undefined
+          if (targetWsId !== undefined && !targetWsId.startsWith('remote:')) {
+            realWsId = targetWsId
+          } else if (targetCwd !== undefined) {
+            realWsId = pathToRemoteWorkspaceId.get(targetCwd)
+            if (realWsId === undefined) {
+              const baseline = await caller.fetchWorkspaceBaseline().catch(() => undefined)
+              if (baseline !== undefined) {
+                for (const it of baseline.items) {
+                  pathToRemoteWorkspaceId.set(it.path, it.workspaceId)
+                }
+                realWsId = pathToRemoteWorkspaceId.get(targetCwd)
+              }
+            }
+          }
+
+          const request = realWsId !== undefined
+            ? { workspaceId: realWsId, ...(body.sessionId ? { sessionId: String(body.sessionId) } : {}) }
+            : { cwd: targetCwd ?? '', ...(body.sessionId ? { sessionId: String(body.sessionId) } : {}) }
+
+          const result = await caller.invoke<{ sessionId: string; agentPreset?: string }>(
+            'session/create',
+            { request },
+          )
+          sendJson(res, 200, { ok: true, value: result })
+        } catch (error) {
+          sendJson(res, 200, {
+            ok: false,
+            error: { message: error instanceof Error ? error.message : String(error) },
+          })
+        }
+      },
+    }), 'remote-ssh: session create route')
   })
 }

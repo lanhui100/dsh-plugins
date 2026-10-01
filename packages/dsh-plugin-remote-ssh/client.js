@@ -32,6 +32,7 @@ window.__ModuleLoader__.load({
     const SESSION_PROMPT_ROUTE = '/remote-ssh/prompt'
     const SESSION_CANCEL_ROUTE = '/remote-ssh/cancel'
     const SESSION_FOLLOW_ROUTE = '/remote-ssh/session-follow'
+    const SESSION_CREATE_ROUTE = '/remote-ssh/create'
     /** Refresh the remote workspace/session projection this often (ms). */
     const POLL_INTERVAL_MS = 60_000
 
@@ -298,7 +299,7 @@ window.__ModuleLoader__.load({
     function installSessionProxy(ctx) {
       const ns = ctx.remote && ctx.remote.session
       if (!ns) return () => {}
-      const methods = ['page', 'follow', 'projections', 'prompt', 'cancel', 'rename', 'attachment']
+      const methods = ['page', 'follow', 'projections', 'prompt', 'cancel', 'rename', 'attachment', 'create']
       const saved = new Map()
       for (const method of methods) {
         const desc = Object.getOwnPropertyDescriptor(ns, method)
@@ -468,6 +469,47 @@ window.__ModuleLoader__.load({
           const { id } = sessionTargetOfRequest(args)
           if (!isRemote(id)) return originalCall('attachment', args)
           return Promise.resolve({ ok: false, error: new Error('remote-ssh: 远端会话图片读取尚未接通') })
+        },
+        create: async (...args) => {
+          const req = (args && typeof args[0] === 'object' && args[0] !== null) ? args[0] : {}
+          const workspaceId = typeof req.workspaceId === 'string' ? req.workspaceId : undefined
+          const cwd = typeof req.cwd === 'string' ? req.cwd : undefined
+
+          const isRemoteTarget = (workspaceId && workspaceId.startsWith('remote:')) ||
+            (workspaceId && injectedWorkspaceIds.has(workspaceId)) ||
+            (cwd && injectedWorkspaceIds.has(`remote:${cwd}`))
+
+          if (!isRemoteTarget) return originalCall('create', args)
+
+          try {
+            const res = await fetch(SESSION_CREATE_ROUTE, {
+              method: 'POST',
+              headers: { 'content-type': 'application/json', accept: 'application/json' },
+              body: JSON.stringify(req),
+            })
+            const data = await res.json().catch(() => null)
+            if (data && typeof data === 'object' && data.ok && data.value && data.value.sessionId) {
+              const newSessionId = data.value.sessionId
+              remoteSessionIds.add(newSessionId)
+              if (workspaceId && ctx.workspaces && ctx.workspaces.list && typeof ctx.workspaces.list.upsertView === 'function') {
+                const wsItem = ctx.workspaces.list.items?.find((item) => item.workspaceId === workspaceId)
+                if (wsItem) {
+                  ctx.workspaces.list.upsertView({
+                    ...wsItem,
+                    sessionIds: [newSessionId, ...(wsItem.sessionIds || [])],
+                  })
+                }
+              }
+              return data
+            }
+            if (data && typeof data === 'object' && 'ok' in data) return data
+            if (!res.ok) {
+              return { ok: false, error: new Error((data && data.message) || `HTTP ${res.status}`) }
+            }
+            return { ok: true, value: data }
+          } catch (error) {
+            return { ok: false, error: error instanceof Error ? error : new Error(String(error)) }
+          }
         },
       }
 

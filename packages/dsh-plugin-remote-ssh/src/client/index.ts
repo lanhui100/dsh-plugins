@@ -30,6 +30,9 @@ export const SESSION_CANCEL_ROUTE = '/remote-ssh/cancel'
 /** Host route for streaming remote session follow frames via SSE. */
 export const SESSION_FOLLOW_ROUTE = '/remote-ssh/session-follow'
 
+/** Host route for creating a session in a remote workspace. */
+export const SESSION_CREATE_ROUTE = '/remote-ssh/create'
+
 /** Remote workspace/session projection poll interval. */
 export const POLL_INTERVAL_MS = 60_000
 
