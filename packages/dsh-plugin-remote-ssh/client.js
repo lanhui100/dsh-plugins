@@ -29,6 +29,9 @@ window.__ModuleLoader__.load({
 
     const SESSIONS_ROUTE = '/remote-ssh/sessions'
     const SESSION_RAW_ROUTE = '/remote-ssh/session-raw'
+    const SESSION_PROMPT_ROUTE = '/remote-ssh/prompt'
+    const SESSION_CANCEL_ROUTE = '/remote-ssh/cancel'
+    const SESSION_FOLLOW_ROUTE = '/remote-ssh/session-follow'
     /** Refresh the remote workspace/session projection this often (ms). */
     const POLL_INTERVAL_MS = 60_000
 
@@ -44,6 +47,11 @@ window.__ModuleLoader__.load({
     /** Resolve target session id and parent id from an official `ctx.remote.session.*` request argument list. */
     function sessionTargetOfRequest(args) {
       const req = args && args[0]
+      if (typeof req === 'string') {
+        const id = req
+        const parentId = typeof args[1] === 'string' ? args[1] : sessionParents.get(id)
+        return { id, parentId }
+      }
       if (!req || typeof req !== 'object') return { id: undefined, parentId: undefined }
       const address = req.address
       if (address && typeof address === 'object') {
@@ -51,7 +59,7 @@ window.__ModuleLoader__.load({
         if (address.childSessionId) return { id: address.childSessionId, parentId: address.parentSessionId }
         if (address.sessionId) return { id: address.sessionId, parentId: undefined }
       }
-      const id = req.sessionId || undefined
+      const id = req.sessionId || req.childSessionId || undefined
       const parentId = req.parentSessionId || (id !== undefined ? sessionParents.get(id) : undefined)
       return { id, parentId }
     }
@@ -337,40 +345,119 @@ window.__ModuleLoader__.load({
             yield* originalCall('follow', args)
             return
           }
-          const raw = await remoteFetchRaw(id, args[1], parentId)
-          // One static snapshot opens the official journal; the stream then
-          // stays parked until the caller cancels. Live deltas come in a
-          // later milestone that relays the remote follow stream itself.
-          yield {
-            type: 'snapshot',
-            header: raw.header || {
-              version: 0,
-              id,
-              createdAt: Date.now(),
-              isSeeded: false,
-              ...(parentId !== undefined ? { origin: 'subagent', parentSession: parentId } : {}),
-            },
-            cursor: raw.asOfSeq || 0,
-            records: raw.records || [],
-            hasMore: false,
-            projections: { asOfSeq: raw.asOfSeq || 0, values: raw.projections || {} },
-            assistantStream: { revision: 0 },
+          const signal = args[1]
+          const resolvedParent = parentId || sessionParents.get(id)
+          const parentQuery = resolvedParent ? `&parentId=${encodeURIComponent(resolvedParent)}` : ''
+          const followUrl = `${SESSION_FOLLOW_ROUTE}?id=${encodeURIComponent(id)}${parentQuery}`
+
+          let streamed = false
+          try {
+            const res = await fetch(followUrl, {
+              headers: { accept: 'text/event-stream' },
+              signal,
+            })
+            if (res.ok && res.body && typeof res.body.getReader === 'function') {
+              const reader = res.body.getReader()
+              const decoder = new TextDecoder()
+              let buffer = ''
+              try {
+                while (true) {
+                  const { done, value } = await reader.read()
+                  if (done) break
+                  buffer += typeof value === 'string' ? value : decoder.decode(value, { stream: true })
+                  const parts = buffer.split('\n\n')
+                  buffer = parts.pop() || ''
+                  for (const part of parts) {
+                    const trimmed = part.trim()
+                    if (!trimmed.startsWith('data:')) continue
+                    const jsonText = trimmed.slice(5).trim()
+                    if (!jsonText) continue
+                    const frame = JSON.parse(jsonText)
+                    streamed = true
+                    yield frame
+                  }
+                }
+              } finally {
+                try { reader.releaseLock?.() } catch {}
+              }
+            }
+          } catch (err) {
+            if (signal && signal.aborted) return
           }
-          await new Promise((resolve) => {
-            const signal = args[1]
-            if (!signal || signal.aborted) resolve()
-            else signal.addEventListener('abort', resolve, { once: true })
-          })
+
+          if (!streamed) {
+            // Snapshot fallback if streaming failed or environment does not support response.body reader
+            const raw = await remoteFetchRaw(id, signal, resolvedParent)
+            yield {
+              type: 'snapshot',
+              header: raw.header || {
+                version: 0,
+                id,
+                createdAt: Date.now(),
+                isSeeded: false,
+                ...(resolvedParent !== undefined ? { origin: 'subagent', parentSession: resolvedParent } : {}),
+              },
+              cursor: raw.asOfSeq || 0,
+              records: raw.records || [],
+              hasMore: false,
+              projections: { asOfSeq: raw.asOfSeq || 0, values: raw.projections || {} },
+              assistantStream: { revision: 0 },
+            }
+            await new Promise((resolve) => {
+              if (!signal || signal.aborted) resolve()
+              else signal.addEventListener('abort', resolve, { once: true })
+            })
+          }
         },
-        prompt: (...args) => {
-          const { id } = sessionTargetOfRequest(args)
+        prompt: async (...args) => {
+          const { id, parentId } = sessionTargetOfRequest(args)
           if (!isRemote(id)) return originalCall('prompt', args)
-          return Promise.resolve({ ok: false, error: new Error('remote-ssh: 远端会话续写尚未接通（当前只读里程碑）') })
+          const req = (args && typeof args[0] === 'object' && args[0] !== null) ? args[0] : {}
+          const signal = args[1]
+          try {
+            const res = await fetch(SESSION_PROMPT_ROUTE, {
+              method: 'POST',
+              headers: { 'content-type': 'application/json', accept: 'application/json' },
+              body: JSON.stringify({
+                ...req,
+                sessionId: id,
+                ...(parentId !== undefined ? { parentSessionId: parentId } : {}),
+              }),
+              signal,
+            })
+            const data = await res.json().catch(() => null)
+            if (data && typeof data === 'object' && 'ok' in data) return data
+            if (!res.ok) {
+              return { ok: false, error: new Error((data && data.message) || `HTTP ${res.status}`) }
+            }
+            return { ok: true, value: data ?? { accepted: true } }
+          } catch (error) {
+            return { ok: false, error: error instanceof Error ? error : new Error(String(error)) }
+          }
         },
-        cancel: (...args) => {
-          const { id } = sessionTargetOfRequest(args)
+        cancel: async (...args) => {
+          const { id, parentId } = sessionTargetOfRequest(args)
           if (!isRemote(id)) return originalCall('cancel', args)
-          return Promise.resolve({ ok: false, error: new Error('remote-ssh: 远端会话停止尚未接通（当前只读里程碑）') })
+          const req = (args && typeof args[0] === 'object' && args[0] !== null) ? args[0] : {}
+          try {
+            const res = await fetch(SESSION_CANCEL_ROUTE, {
+              method: 'POST',
+              headers: { 'content-type': 'application/json', accept: 'application/json' },
+              body: JSON.stringify({
+                ...req,
+                sessionId: id,
+                ...(parentId !== undefined ? { parentSessionId: parentId } : {}),
+              }),
+            })
+            const data = await res.json().catch(() => null)
+            if (data && typeof data === 'object' && 'ok' in data) return data
+            if (!res.ok) {
+              return { ok: false, error: new Error((data && data.message) || `HTTP ${res.status}`) }
+            }
+            return { ok: true, value: data ?? { accepted: true } }
+          } catch (error) {
+            return { ok: false, error: error instanceof Error ? error : new Error(String(error)) }
+          }
         },
         rename: (...args) => {
           const { id } = sessionTargetOfRequest(args)
@@ -392,8 +479,51 @@ window.__ModuleLoader__.load({
           get: () => wrap[method],
         })
       }
+
+      let restoreSubagents = () => {}
+      try {
+        const subagentsNs = ctx.remote && ctx.remote.subagents
+        if (subagentsNs) {
+          const subMethods = ['prompt', 'interruptByParent']
+          const savedSub = new Map()
+          for (const method of subMethods) {
+            const desc = Object.getOwnPropertyDescriptor(subagentsNs, method)
+            if (desc) savedSub.set(method, desc)
+          }
+          const origSubCall = (method, args) => {
+            const desc = savedSub.get(method)
+            return desc ? desc.get.call(subagentsNs)(...args) : undefined
+          }
+          const wrapSub = {
+            prompt: (...args) => {
+              const { id } = sessionTargetOfRequest(args)
+              if (!isRemote(id)) return origSubCall('prompt', args)
+              return wrap.prompt(...args)
+            },
+            interruptByParent: (...args) => {
+              const childId = args[0]
+              const parentId = args[1]
+              if (!isRemote(childId)) return origSubCall('interruptByParent', args)
+              return wrap.cancel({ sessionId: childId, parentSessionId: parentId })
+            },
+          }
+          for (const method of Object.keys(wrapSub)) {
+            if (!savedSub.has(method)) continue
+            Object.defineProperty(subagentsNs, method, {
+              configurable: true,
+              enumerable: true,
+              get: () => wrapSub[method],
+            })
+          }
+          restoreSubagents = () => {
+            for (const [method, desc] of savedSub) Object.defineProperty(subagentsNs, method, desc)
+          }
+        }
+      } catch (_) {}
+
       return () => {
         for (const [method, desc] of saved) Object.defineProperty(ns, method, desc)
+        restoreSubagents()
       }
     }
 

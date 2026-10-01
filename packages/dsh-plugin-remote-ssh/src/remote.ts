@@ -314,6 +314,132 @@ export class RemoteCaller {
     }
     return baseline
   }
+
+  /**
+   * Relay the remote `session/follow` multiplexed WebSocket stream into an async iterable of wire frames.
+   * Emits snapshot, delta events, and assistant stream frames in real time.
+   */
+  async *followSession(
+    request: {
+      address: unknown
+      assistantStream?: boolean
+    },
+    signal?: AbortSignal,
+  ): AsyncIterable<unknown> {
+    await this.ensureCookie()
+    const cookie = this.jar.header()
+    const wsUrl = `${this.options.baseUrl.replace(/^http/, 'ws')}/api/remote.mux`
+    const WS = (globalThis as unknown as { WebSocket: typeof WebSocket }).WebSocket
+    if (typeof WS !== 'function') {
+      throw new Error('remote-ssh: WebSocket is not supported in the current Node environment')
+    }
+
+    const streamId = `sf-${Date.now().toString(36)}-${Math.floor(Math.random() * 0xffff).toString(16)}`
+    const socket = new WS(wsUrl, {
+      headers: cookie !== undefined ? { cookie } : {},
+    } as unknown as string[])
+
+    const queue: unknown[] = []
+    let notify: (() => void) | null = null
+    let ended = false
+    let failure: Error | null = null
+
+    const push = (item: unknown) => {
+      queue.push(item)
+      if (notify !== null) {
+        const n = notify
+        notify = null
+        n()
+      }
+    }
+
+    const terminate = (err: Error | null) => {
+      if (ended) return
+      ended = true
+      failure = err
+      if (notify !== null) {
+        const n = notify
+        notify = null
+        n()
+      }
+      try {
+        if (socket.readyState === 1) {
+          socket.send(JSON.stringify({ type: 'cancel', streamId }))
+        }
+      } catch {
+        // ignore send error on closing
+      }
+      try {
+        socket.close()
+      } catch {
+        // ignore close error
+      }
+    }
+
+    socket.onopen = () => {
+      try {
+        socket.send(JSON.stringify({
+          type: 'open',
+          streamId,
+          endpoint: 'session/follow',
+          payload: { args: { request } },
+        }))
+      } catch (err) {
+        terminate(err instanceof Error ? err : new Error(String(err)))
+      }
+    }
+
+    socket.onmessage = (event) => {
+      try {
+        const raw = typeof event.data === 'string' ? event.data : event.data?.toString()
+        if (!raw) return
+        const msg = JSON.parse(raw) as {
+          type?: string
+          streamId?: string
+          error?: { message?: string }
+          value?: unknown
+        }
+        if (msg.streamId !== streamId) return
+        if (msg.type === 'item') {
+          push(msg.value)
+        } else if (msg.type === 'error') {
+          terminate(new Error(msg.error?.message ?? 'Remote follow stream error'))
+        } else if (msg.type === 'done') {
+          terminate(null)
+        }
+      } catch (err) {
+        terminate(err instanceof Error ? err : new Error(String(err)))
+      }
+    }
+
+    socket.onerror = (err) => {
+      terminate(new Error(`remote-ssh: WebSocket error connecting to remote.mux: ${String(err)}`))
+    }
+
+    socket.onclose = () => {
+      terminate(null)
+    }
+
+    const onAbort = () => terminate(new Error('remote-ssh: follow stream aborted'))
+    signal?.addEventListener('abort', onAbort, { once: true })
+
+    try {
+      while (true) {
+        if (queue.length > 0) {
+          yield queue.shift()
+          continue
+        }
+        if (ended) {
+          if (failure !== null && !(signal?.aborted)) throw failure
+          break
+        }
+        await new Promise<void>((resolve) => { notify = resolve })
+      }
+    } finally {
+      signal?.removeEventListener('abort', onAbort)
+      terminate(null)
+    }
+  }
 }
 
 export interface RemoteWorkspaceBaselineItem {

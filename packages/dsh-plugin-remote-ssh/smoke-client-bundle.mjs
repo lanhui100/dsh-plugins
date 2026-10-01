@@ -78,6 +78,36 @@ globalThis.fetch = async (url) => {
       }),
     }
   }
+  if (urlStr.includes('/remote-ssh/prompt')) {
+    return {
+      ok: true,
+      status: 200,
+      json: async () => ({ ok: true, value: { accepted: true } }),
+    }
+  }
+  if (urlStr.includes('/remote-ssh/cancel')) {
+    return {
+      ok: true,
+      status: 200,
+      json: async () => ({ ok: true, value: { accepted: true } }),
+    }
+  }
+  if (urlStr.includes('/remote-ssh/session-follow')) {
+    const sseText = 'data: ' + JSON.stringify({ type: 'snapshot', cursor: 42, records: [{ seq: 1 }] }) + '\n\ndata: ' + JSON.stringify({ type: 'assistant-stream', frame: { revision: 1 } }) + '\n\n'
+    const encoder = new TextEncoder()
+    const stream = new ReadableStream({
+      start(controller) {
+        controller.enqueue(encoder.encode(sseText))
+        controller.close()
+      },
+    })
+    return {
+      ok: true,
+      status: 200,
+      headers: { get: () => 'text/event-stream' },
+      body: stream,
+    }
+  }
   return {
     ok: true,
     status: 200,
@@ -288,10 +318,43 @@ assert.ok(
 const localPage = await pluginCtx.remote.session.page({ sessionId: 'session-local-x' }, null)
 console.log(`local page passthrough method=${localPage.value?.method}`)
 
-// Follow remote branch yields a static snapshot.
+// Remote branch: prompt forwards to /remote-ssh/prompt
+const promptRes = await pluginCtx.remote.session.prompt({
+  sessionId: 'session-demo-1',
+  content: [{ type: 'text', text: 'Hello remote AI' }],
+})
+assert.ok(promptRes.ok, 'Remote prompt request must succeed')
+assert.equal(promptRes.value?.accepted, true, 'Remote prompt must return accepted: true')
+assert.ok(requestedUrls.some((u) => u.includes('/remote-ssh/prompt')), 'Prompt must hit /remote-ssh/prompt')
+
+// Subagent remote branch: prompt carries parentId
+const subagentPromptRes = await pluginCtx.remote.session.prompt({
+  sessionId: 'subagent-child-1',
+  parentSessionId: 'session-demo-1',
+  content: [{ type: 'text', text: 'Audit code' }],
+})
+assert.ok(subagentPromptRes.ok, 'Subagent prompt request must succeed')
+
+// Remote branch: cancel forwards to /remote-ssh/cancel
+const cancelRes = await pluginCtx.remote.session.cancel({ sessionId: 'session-demo-1' })
+assert.ok(cancelRes.ok, 'Remote cancel request must succeed')
+assert.equal(cancelRes.value?.accepted, true, 'Remote cancel must return accepted: true')
+assert.ok(requestedUrls.some((u) => u.includes('/remote-ssh/cancel')), 'Cancel must hit /remote-ssh/cancel')
+
+// Local branch: prompt and cancel pass through to original getter
+const localPrompt = await pluginCtx.remote.session.prompt({ sessionId: 'session-local-x' })
+assert.equal(localPrompt.value?.method, 'prompt', 'Local prompt must pass through')
+const localCancel = await pluginCtx.remote.session.cancel({ sessionId: 'session-local-x' })
+assert.equal(localCancel.value?.method, 'cancel', 'Local cancel must pass through')
+
+// Follow remote branch yields streamed frames (snapshot, then delta notification).
 const iterator = pluginCtx.remote.session.follow({ address: { kind: 'session', sessionId: 'session-demo-1' } }, null)
 const first = await iterator.next()
 console.log(`remote follow first frame type=${first.value?.type} cursor=${first.value?.cursor}`)
+assert.equal(first.value?.type, 'snapshot', 'First frame must be snapshot')
+const second = await iterator.next()
+console.log(`remote follow second frame type=${second.value?.type}`)
+assert.equal(second.value?.type, 'assistant-stream', 'Second frame must be assistant-stream from SSE')
 
 // Teardown: restore getters and remove injected remote rows.
 await fork.dispose()

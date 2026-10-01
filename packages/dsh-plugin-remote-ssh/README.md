@@ -21,7 +21,9 @@
 - Host 端注册 `/remote-ssh` 人令（在对话输入框输入即可列出远端会话）。
 - **完整复用官方 UI（零自定义界面）**：Client 半不注册任何槽位/面板/侧边栏。Host 注册只读路由 `GET /remote-ssh/sessions`（按 cwd 聚合的工作区与会话快照）、`GET /remote-ssh/session?id=...`（人性化详情）与 `GET /remote-ssh/session-raw?id=...`（原始 wire 事件，供官方会话管道直接消费）。
 - **注入官方模型**：Client 端把远程工作区/会话 upsert 进 `ctx.workspaces.list`（`upsertView`）与 `ctx.sessions`（`handleSessionAdded`），因此远程工作区直接出现在官方 `WorkspaceBrowser` 侧边栏树里——官方文件夹折叠/展开、会话行、状态点、右键菜单全部原样生效。
-- **代理会话流**：Client 端包装 `ctx.remote.session` 的 `page` / `follow` / `projections` / `prompt` / `cancel` / `rename` / `attachment`；命中已知远程会话 id 时从隧道路由应答，本地会话原样穿透。点击侧边栏远程会话即走官方 `openSession` → 官方 `ui-conversation` 用远程原始事件组装官方消息流。
+- **代理会话流**：Client 端包装 `ctx.remote.session`（以及 `ctx.remote.subagents`）的 `page` / `follow` / `projections` / `prompt` / `cancel` / `rename` / `attachment`；命中已知远程会话 id 时从隧道路由应答，本地会话原样穿透。点击侧边栏远程会话即走官方 `openSession` → 官方 `ui-conversation` 用远程原始事件组装官方消息流。
+- **消息续写与取消**：用户在远程会话界面发送消息或停止生成时，Client 端经由 Host 路由 `POST /remote-ssh/prompt` 与 `POST /remote-ssh/cancel` 转发至远端 `session/prompt`、`session/cancel`（子智能体路由到 `subagents/prompt`、`subagents/interruptByParent`），直接打通双向交互。
+- **实时事件与打字机流**：Host 端提供 `GET /remote-ssh/session-follow` SSE 路由，连接远端 `/api/remote.mux` WebSocket 订阅 `session/follow`，将远端推送的事件增量与 assistant 打字机流实时中继到官方会话面板。
 - 刷新：远程快照 60s 轮询（`POLL_INTERVAL_MS`），离开时移除注入行并恢复被代理的方法。
 
 ## 产物与构建
@@ -57,7 +59,6 @@
 
 - 仅支持通过 OpenSSH 密钥免密登录的主机配置（如 `~/.ssh/config` 中的 `Host dev`）。
 - 远端 DSH 需要启动为 `dsh web` 模式并保留日志（默认 `/tmp/dsh-web.log`）。
-- 远端会话当前为**只读查看**：官方会话区完整渲染远程历史对话、工具调用与目标；继续发送消息（`session/prompt`）、停止、重命名与图片读取尚未接通（代理对远程 id 返回明确的"未接通"错误）。
-- `/remote-ssh/sessions`、`/remote-ssh/session` 与 `/remote-ssh/session-raw` 由本地 webserver 直接服务，**不经过 `/api` 的浏览器鉴权围栏**：本机任意进程可读该 JSON；若把 webserver 绑到非回环地址，网络侧同样可读（只读、默认回环绑定）。详见 `.agents/notes/implemented/architecture/2026-10-01-reuse-official-workspace-session-ui.md`。
-- 远程会话 `follow` 流当前以静态快照打开（历史可见、无实时增量）；实时增量需在后续里程碑转发远程 follow 流本身。
+- 远端会话重命名（`rename`）与图片读取（`attachment`）尚未接通（代理返回明确未接通错误）。
+- `/remote-ssh/*` 路由由本地 webserver 直接服务，**不经过 `/api` 的浏览器鉴权围栏**：本机任意进程可读该 JSON/SSE；若把 webserver 绑到非回环地址，网络侧同样可读（只读、默认回环绑定）。详见 `.agents/notes/implemented/architecture/2026-10-01-reuse-official-workspace-session-ui.md`。
 - `client.js` 为手工产物，无 sourcemap（扫描器容忍缺失）。

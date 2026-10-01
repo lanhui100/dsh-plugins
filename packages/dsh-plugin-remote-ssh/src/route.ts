@@ -20,6 +20,15 @@ export const SESSION_DETAIL_ROUTE = '/remote-ssh/session'
  */
 export const SESSION_RAW_ROUTE = '/remote-ssh/session-raw'
 
+/** Absolute pathname for prompting an active remote session or subagent. */
+export const SESSION_PROMPT_ROUTE = '/remote-ssh/prompt'
+
+/** Absolute pathname for canceling/interrupting an active remote session or subagent. */
+export const SESSION_CANCEL_ROUTE = '/remote-ssh/cancel'
+
+/** Absolute pathname for streaming remote session follow frames via SSE. */
+export const SESSION_FOLLOW_ROUTE = '/remote-ssh/session-follow'
+
 /** The slice of the host web server this module registers against. */
 export interface WebServerLike {
   register(route: {
@@ -33,6 +42,7 @@ export interface WebServerLike {
 export interface HttpResponseLike {
   writeHead(status: number, headers: Record<string, string>): void
   end(body?: string): void
+  write?(chunk: string): boolean
 }
 
 declare module '@deepseek-ai/cordis' {
@@ -48,6 +58,21 @@ function sendJson(res: HttpResponseLike, status: number, value: unknown): void {
     'cache-control': 'no-store',
   })
   res.end(body)
+}
+
+async function readJsonBody(req: unknown): Promise<Record<string, unknown>> {
+  const incoming = req as { on?: (event: string, cb: (...args: unknown[]) => void) => void }
+  if (typeof incoming?.on !== 'function') return {}
+  const chunks: Buffer[] = []
+  await new Promise<void>((resolve, reject) => {
+    incoming.on!('data', (chunk: unknown) => {
+      chunks.push(Buffer.isBuffer(chunk) ? chunk : Buffer.from(chunk as ArrayBuffer))
+    })
+    incoming.on!('end', () => resolve())
+    incoming.on!('error', reject)
+  })
+  const text = Buffer.concat(chunks).toString('utf8').trim()
+  return text.length > 0 ? JSON.parse(text) : {}
 }
 
 /**
@@ -236,5 +261,147 @@ export function registerRemoteSshRoute(
         }
       },
     }), 'remote-ssh: session raw route')
+
+    scoped.effect(() => scoped.webServer.register({
+      kind: 'exact',
+      path: SESSION_PROMPT_ROUTE,
+      handler: async (req, res) => {
+        const caller = getCaller()
+        if (caller === undefined) {
+          sendJson(res, 503, { ok: false, error: { message: 'tunnel-not-ready' } })
+          return
+        }
+        try {
+          const body = await readJsonBody(req)
+          const sessionId = String(body.sessionId ?? '')
+          const parentSessionId = body.parentSessionId ? String(body.parentSessionId) : subagentParents.get(sessionId)
+          const requestId = String(body.requestId || `req-${Date.now().toString(36)}`)
+          const mode = body.mode === 'steer' ? 'steer' : 'queue'
+          const content = body.content
+          const clientTimeZone = typeof body.clientTimeZone === 'string' ? body.clientTimeZone : undefined
+
+          let result: unknown
+          if (parentSessionId !== undefined) {
+            result = await caller.invoke('subagents/prompt', {
+              request: {
+                requestId,
+                parentSessionId,
+                childSessionId: sessionId,
+                mode: 'continuable',
+                delivery: mode,
+                content,
+                ...(clientTimeZone ? { clientTimeZone } : {}),
+              },
+            })
+          } else {
+            result = await caller.invoke('session/prompt', {
+              request: {
+                requestId,
+                sessionId,
+                mode,
+                content,
+                ...(clientTimeZone ? { clientTimeZone } : {}),
+              },
+            })
+          }
+          sendJson(res, 200, { ok: true, value: result ?? { accepted: true } })
+        } catch (error) {
+          sendJson(res, 200, {
+            ok: false,
+            error: { message: error instanceof Error ? error.message : String(error) },
+          })
+        }
+      },
+    }), 'remote-ssh: prompt route')
+
+    scoped.effect(() => scoped.webServer.register({
+      kind: 'exact',
+      path: SESSION_CANCEL_ROUTE,
+      handler: async (req, res) => {
+        const caller = getCaller()
+        if (caller === undefined) {
+          sendJson(res, 503, { ok: false, error: { message: 'tunnel-not-ready' } })
+          return
+        }
+        try {
+          const body = await readJsonBody(req)
+          const sessionId = String(body.sessionId ?? '')
+          const parentSessionId = body.parentSessionId ? String(body.parentSessionId) : subagentParents.get(sessionId)
+
+          let result: unknown
+          if (parentSessionId !== undefined) {
+            result = await caller.invoke('subagents/interruptByParent', {
+              childSessionId: sessionId,
+              parentSessionId,
+              mode: 'continuable',
+            })
+          } else {
+            result = await caller.invoke('session/cancel', {
+              request: { sessionId },
+            })
+          }
+          sendJson(res, 200, { ok: true, value: result ?? { accepted: true } })
+        } catch (error) {
+          sendJson(res, 200, {
+            ok: false,
+            error: { message: error instanceof Error ? error.message : String(error) },
+          })
+        }
+      },
+    }), 'remote-ssh: cancel route')
+
+    scoped.effect(() => scoped.webServer.register({
+      kind: 'exact',
+      path: SESSION_FOLLOW_ROUTE,
+      handler: async (req, res) => {
+        const caller = getCaller()
+        if (caller === undefined) {
+          sendJson(res, 503, { error: 'tunnel-not-ready' })
+          return
+        }
+        const urlStr = typeof (req as { url?: string }).url === 'string'
+          ? (req as { url: string }).url
+          : '/'
+        const url = new URL(urlStr, 'http://127.0.0.1')
+        const sessionId = url.searchParams.get('id')
+        const queryParentId = url.searchParams.get('parentId')
+        if (sessionId === null || sessionId.trim() === '') {
+          sendJson(res, 400, { error: 'missing-id', message: 'Query parameter "id" is required' })
+          return
+        }
+        const resolvedParentId = (queryParentId && queryParentId.trim() !== '')
+          ? queryParentId.trim()
+          : subagentParents.get(sessionId)
+
+        const address = resolvedParentId !== undefined
+          ? { kind: 'subagent', parentSessionId: resolvedParentId, childSessionId: sessionId, mode: 'unknown' }
+          : { kind: 'session', sessionId }
+
+        res.writeHead(200, {
+          'content-type': 'text/event-stream; charset=utf-8',
+          'cache-control': 'no-cache, no-transform',
+          'connection': 'keep-alive',
+        })
+
+        const ac = new AbortController()
+        const incoming = req as { on?: (event: string, cb: () => void) => void }
+        incoming.on?.('close', () => ac.abort())
+
+        try {
+          const stream = caller.followSession({ address, assistantStream: true }, ac.signal)
+          for await (const frame of stream) {
+            if (typeof res.write === 'function') {
+              res.write(`data: ${JSON.stringify(frame)}\n\n`)
+            }
+          }
+        } catch (err) {
+          if (!ac.signal.aborted) {
+            console.warn('remote-ssh: follow stream relay error:', err)
+          }
+        } finally {
+          res.end()
+        }
+      },
+    }), 'remote-ssh: session follow route')
   })
 }

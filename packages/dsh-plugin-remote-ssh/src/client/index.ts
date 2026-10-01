@@ -21,6 +21,15 @@ export const SESSIONS_ROUTE = '/remote-ssh/sessions'
 /** Host route serving one remote session's raw wire projections and event records. */
 export const SESSION_RAW_ROUTE = '/remote-ssh/session-raw'
 
+/** Host route for sending prompts to remote sessions. */
+export const SESSION_PROMPT_ROUTE = '/remote-ssh/prompt'
+
+/** Host route for canceling remote sessions. */
+export const SESSION_CANCEL_ROUTE = '/remote-ssh/cancel'
+
+/** Host route for streaming remote session follow frames via SSE. */
+export const SESSION_FOLLOW_ROUTE = '/remote-ssh/session-follow'
+
 /** Remote workspace/session projection poll interval. */
 export const POLL_INTERVAL_MS = 60_000
 

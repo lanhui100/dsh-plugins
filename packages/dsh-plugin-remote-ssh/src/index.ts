@@ -12,8 +12,16 @@ export { SshTunnel } from './tunnel.ts'
 export { RemoteCaller, RemoteAuthError, readLaunchToken } from './remote.ts'
 export { listRemoteSessions, groupSessionsByWorkspace, type RemoteSessionItem, type RemoteWorkspaceGroup } from './sessions.ts'
 export { registerRemoteSshCommand } from './command.ts'
-export { registerRemoteSshRoute, SESSIONS_ROUTE, SESSION_DETAIL_ROUTE, SESSION_RAW_ROUTE } from './route.ts'
 export { getRemoteSessionDetail, type RemoteMessageItem, type RemoteSessionDetail } from './session-detail.ts'
+export {
+  registerRemoteSshRoute,
+  SESSIONS_ROUTE,
+  SESSION_DETAIL_ROUTE,
+  SESSION_RAW_ROUTE,
+  SESSION_PROMPT_ROUTE,
+  SESSION_CANCEL_ROUTE,
+  SESSION_FOLLOW_ROUTE,
+} from './route.ts'
 export {
   REMOTE_SOURCE_KIND,
   namespaceRemoteId,
