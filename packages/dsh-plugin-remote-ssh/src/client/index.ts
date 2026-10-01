@@ -103,6 +103,8 @@ export interface RemoteSshClientModels {
       readonly retainedBy: Record<string, never>
     }): void
     handleSessionRemoved(sessionId: string): void
+    handleSessionStatus?(sessionId: string, running: boolean): void
+    handleSessionActivity?(sessionId: string, updatedAt: number): void
   }
 }
 

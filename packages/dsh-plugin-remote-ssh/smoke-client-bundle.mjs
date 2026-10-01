@@ -100,7 +100,13 @@ globalThis.fetch = async (url) => {
     }
   }
   if (urlStr.includes('/remote-ssh/session-follow')) {
-    const sseText = 'data: ' + JSON.stringify({ type: 'snapshot', cursor: 42, records: [{ seq: 1 }] }) + '\n\ndata: ' + JSON.stringify({ type: 'assistant-stream', frame: { revision: 1 } }) + '\n\n'
+    const sseFrames = [
+      JSON.stringify({ type: 'snapshot', cursor: 42, records: [{ seq: 1 }] }),
+      JSON.stringify({ type: 'event', event: { type: 'turn/start', seq: 2, time: 1700000000002 } }),
+      JSON.stringify({ type: 'assistant-stream', frame: { revision: 1 } }),
+      JSON.stringify({ type: 'event', event: { type: 'turn/end', seq: 3, time: 1700000000003 } }),
+    ]
+    const sseText = sseFrames.map((f) => `data: ${f}\n\n`).join('')
     const encoder = new TextEncoder()
     const stream = new ReadableStream({
       start(controller) {
@@ -157,6 +163,8 @@ const upserted = []
 const removedWorkspaces = []
 const addedSessions = []
 const removedSessions = []
+const sessionStatusUpdates = []
+const sessionActivityUpdates = []
 
 class RemoteService extends Service {
   static [Service.tracker] = { associate: 'remote' }
@@ -221,6 +229,12 @@ class SessionsService extends Service {
   }
   handleSessionRemoved(id) {
     removedSessions.push(id)
+  }
+  handleSessionStatus(sessionId, running) {
+    sessionStatusUpdates.push({ sessionId, running })
+  }
+  handleSessionActivity(sessionId, updatedAt) {
+    sessionActivityUpdates.push({ sessionId, updatedAt })
   }
 }
 
@@ -333,6 +347,10 @@ const promptRes = await pluginCtx.remote.session.prompt({
 assert.ok(promptRes.ok, 'Remote prompt request must succeed')
 assert.equal(promptRes.value?.accepted, true, 'Remote prompt must return accepted: true')
 assert.ok(requestedUrls.some((u) => u.includes('/remote-ssh/prompt')), 'Prompt must hit /remote-ssh/prompt')
+assert.ok(
+  sessionStatusUpdates.some((u) => u.sessionId === 'session-demo-1' && u.running === true),
+  'Prompt must trigger handleSessionStatus(sessionId, true) to enter running/thinking state immediately',
+)
 
 // Subagent remote branch: prompt carries parentId
 const subagentPromptRes = await pluginCtx.remote.session.prompt({
@@ -341,12 +359,20 @@ const subagentPromptRes = await pluginCtx.remote.session.prompt({
   content: [{ type: 'text', text: 'Audit code' }],
 })
 assert.ok(subagentPromptRes.ok, 'Subagent prompt request must succeed')
+assert.ok(
+  sessionStatusUpdates.some((u) => u.sessionId === 'subagent-child-1' && u.running === true),
+  'Subagent prompt must trigger handleSessionStatus(childSessionId, true)',
+)
 
 // Remote branch: cancel forwards to /remote-ssh/cancel
 const cancelRes = await pluginCtx.remote.session.cancel({ sessionId: 'session-demo-1' })
 assert.ok(cancelRes.ok, 'Remote cancel request must succeed')
 assert.equal(cancelRes.value?.accepted, true, 'Remote cancel must return accepted: true')
 assert.ok(requestedUrls.some((u) => u.includes('/remote-ssh/cancel')), 'Cancel must hit /remote-ssh/cancel')
+assert.ok(
+  sessionStatusUpdates.some((u) => u.sessionId === 'session-demo-1' && u.running === false),
+  'Cancel must trigger handleSessionStatus(sessionId, false) to exit running state immediately',
+)
 
 // Local branch: prompt and cancel pass through to original getter
 const localPrompt = await pluginCtx.remote.session.prompt({ sessionId: 'session-local-x' })
@@ -368,14 +394,41 @@ assert.ok(newSessionPage.ok, 'Newly created remote session must route to remote 
 const localCreate = await pluginCtx.remote.session.create({ workspaceId: 'local-workspace-1' })
 assert.equal(localCreate.value?.method, 'create', 'Local create must pass through')
 
+// Clear status updates to isolate follow assertions
+sessionStatusUpdates.length = 0
+sessionActivityUpdates.length = 0
+
 // Follow remote branch yields streamed frames (snapshot, then delta notification).
 const iterator = pluginCtx.remote.session.follow({ address: { kind: 'session', sessionId: 'session-demo-1' } }, null)
 const first = await iterator.next()
 console.log(`remote follow first frame type=${first.value?.type} cursor=${first.value?.cursor}`)
 assert.equal(first.value?.type, 'snapshot', 'First frame must be snapshot')
-const second = await iterator.next()
-console.log(`remote follow second frame type=${second.value?.type}`)
-assert.equal(second.value?.type, 'assistant-stream', 'Second frame must be assistant-stream from SSE')
+
+// Consume all frames from iterator
+const remainingFrames = []
+while (true) {
+  const nextItem = await iterator.next()
+  if (nextItem.done) break
+  remainingFrames.push(nextItem.value)
+}
+console.log(`received ${remainingFrames.length} remaining stream frames`)
+
+// Follow stream assertions:
+// 1. turn/start or assistant-stream sets running=true
+assert.ok(
+  sessionStatusUpdates.some((u) => u.sessionId === 'session-demo-1' && u.running === true),
+  'Follow stream must trigger handleSessionStatus(id, true) on turn/start or stream frames',
+)
+// 2. turn/end or stream completion sets running=false
+assert.ok(
+  sessionStatusUpdates.some((u) => u.sessionId === 'session-demo-1' && u.running === false),
+  'Follow stream must trigger handleSessionStatus(id, false) on turn/end or stream completion',
+)
+// 3. Activity updates are pushed on timestamped events
+assert.ok(
+  sessionActivityUpdates.some((u) => u.sessionId === 'session-demo-1' && u.updatedAt === 1700000000003),
+  'Follow stream must trigger handleSessionActivity(id, time) on turn/end',
+)
 
 // Teardown: restore getters and remove injected remote rows.
 await fork.dispose()

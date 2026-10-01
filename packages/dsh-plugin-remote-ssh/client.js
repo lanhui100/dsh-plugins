@@ -267,6 +267,9 @@ window.__ModuleLoader__.load({
       if (sessions && typeof sessions.handleSessionAdded === 'function') {
         for (const s of nextSessions) {
           sessions.handleSessionAdded(s)
+          if (typeof sessions.handleSessionStatus === 'function') {
+            sessions.handleSessionStatus(s.sessionId, Boolean(s.running))
+          }
         }
       }
 
@@ -375,11 +378,32 @@ window.__ModuleLoader__.load({
                     if (!jsonText) continue
                     const frame = JSON.parse(jsonText)
                     streamed = true
+
+                    if (ctx.sessions) {
+                      if (frame.type === 'assistant-stream' || (frame.type === 'event' && frame.event && frame.event.type === 'turn/start')) {
+                        if (typeof ctx.sessions.handleSessionStatus === 'function') {
+                          ctx.sessions.handleSessionStatus(id, true)
+                        }
+                      } else if (frame.type === 'event' && frame.event && frame.event.type === 'turn/end') {
+                        if (typeof ctx.sessions.handleSessionStatus === 'function') {
+                          ctx.sessions.handleSessionStatus(id, false)
+                        }
+                      }
+                      if (frame.type === 'event' && frame.event && typeof frame.event.time === 'number') {
+                        if (typeof ctx.sessions.handleSessionActivity === 'function') {
+                          ctx.sessions.handleSessionActivity(id, frame.event.time)
+                        }
+                      }
+                    }
+
                     yield frame
                   }
                 }
               } finally {
                 try { reader.releaseLock?.() } catch {}
+                if (ctx.sessions && typeof ctx.sessions.handleSessionStatus === 'function') {
+                  ctx.sessions.handleSessionStatus(id, false)
+                }
               }
             }
           } catch (err) {
@@ -404,6 +428,9 @@ window.__ModuleLoader__.load({
               projections: { asOfSeq: raw.asOfSeq || 0, values: raw.projections || {} },
               assistantStream: { revision: 0 },
             }
+            if (ctx.sessions && typeof ctx.sessions.handleSessionStatus === 'function') {
+              ctx.sessions.handleSessionStatus(id, false)
+            }
             await new Promise((resolve) => {
               if (!signal || signal.aborted) resolve()
               else signal.addEventListener('abort', resolve, { once: true })
@@ -427,9 +454,17 @@ window.__ModuleLoader__.load({
               signal,
             })
             const data = await res.json().catch(() => null)
-            if (data && typeof data === 'object' && 'ok' in data) return data
+            if (data && typeof data === 'object' && 'ok' in data) {
+              if (data.ok && ctx.sessions && typeof ctx.sessions.handleSessionStatus === 'function') {
+                ctx.sessions.handleSessionStatus(id, true)
+              }
+              return data
+            }
             if (!res.ok) {
               return { ok: false, error: new Error((data && data.message) || `HTTP ${res.status}`) }
+            }
+            if (ctx.sessions && typeof ctx.sessions.handleSessionStatus === 'function') {
+              ctx.sessions.handleSessionStatus(id, true)
             }
             return { ok: true, value: data ?? { accepted: true } }
           } catch (error) {
@@ -451,9 +486,17 @@ window.__ModuleLoader__.load({
               }),
             })
             const data = await res.json().catch(() => null)
-            if (data && typeof data === 'object' && 'ok' in data) return data
+            if (data && typeof data === 'object' && 'ok' in data) {
+              if (data.ok && ctx.sessions && typeof ctx.sessions.handleSessionStatus === 'function') {
+                ctx.sessions.handleSessionStatus(id, false)
+              }
+              return data
+            }
             if (!res.ok) {
               return { ok: false, error: new Error((data && data.message) || `HTTP ${res.status}`) }
+            }
+            if (ctx.sessions && typeof ctx.sessions.handleSessionStatus === 'function') {
+              ctx.sessions.handleSessionStatus(id, false)
             }
             return { ok: true, value: data ?? { accepted: true } }
           } catch (error) {
