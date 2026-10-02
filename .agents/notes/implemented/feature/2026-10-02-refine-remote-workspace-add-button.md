@@ -26,7 +26,7 @@ Status: implemented
   - tooltip `show()` 对已脱离 DOM 的 anchor 直接返回，杜绝 500ms 延迟窗口内的幽灵气泡；成功关闭窗口内按钮保持 disabled；浮层关闭路径统一移除 outside-click 监听（评审 A-P2-1 / P3）。
   - 静态 smoke 套件聚合为 `pnpm --filter dsh-plugin-remote-ssh test` 门禁命令；smoke 增加 HTMLCollection 语义回归守卫、tooltip 行为与幽灵气泡断言、成功态 disabled/图标恢复断言、无 primaryHost + 持久化恢复断言（评审 P2-4/5/6/7）。
 - **连接/断联语义与已连接主机管理（第二、三轮优化迭代，同批落地）**：
-  - 浮层改为“已连接主机 / 可添加主机”两区：已连接主机始终展示，右侧为**断联图标按钮**（插头与插座明显分离 + 锐利斜杠切断，active 蓝色 `--dsw-alias-state-business-primary`）；未连接主机右侧为**连接图标按钮**（插头双脚端正插入插座插孔咬合式样），彻底去掉 “＋” 的“重新添加”语义。主机行带灰色圆角底（`--dsw-alias-bg-module-platform`）、hover 背景加深（`--dsw-alias-interactive-bg-hover`）。
+  - 浮层改为“已连接主机 / 可添加主机”两区：已连接主机始终展示，右侧为**断开图标按钮**（插头与插座上下分离、保留清晰间隙，不使用斜线或删除符号，active 蓝色 `--dsw-alias-state-business-primary`）；未连接主机右侧为**连接图标按钮**（插头双脚端正插入插座插孔咬合式样），彻底去掉 “＋” 的“重新添加”语义。主机行带灰色圆角底（`--dsw-alias-bg-module-platform`）、hover 背景加深（`--dsw-alias-interactive-bg-hover`）。
   - Host 端新增 `RemoteHostManager.removeHost`（复用现有 dispose 链路，拒绝在 in-flight 连接期间移除）与 `POST /remote-ssh/remove-host` 路由；`GET /remote-ssh/available-hosts` 新增 `connectedHosts`（含 `~/.ssh/config` 详情的已连接主机），客户端断开成功后重取列表并刷新聚合。
   - 连接成功后按钮转为 active 蓝色成功图标（短暂态，随后浮层关闭）；`setAddBusy` 支持按按钮语义恢复图标（连接/断联各自还原）。
   - 面板间距收紧（主机行 `gap: 4px` → 后续再收紧至 `2px`、内边距 `6px → 4px`），hover 改为背景色变化（`--dsw-alias-interactive-bg-hover`），不再使用边框。
@@ -47,5 +47,5 @@ Status: implemented
 - 头部按钮与官方图标按钮在尺寸、颜色、hover、focus、垂直对齐与右侧簇位置完全一致，tooltip 呈现官方暗色气泡（底部、500ms 延迟）。
 - 浮层内主机添加为纯图标按钮，点击后可见 loading 态；连接成功出现官方样式全局 Toast，并明确提示远端 dsh 服务是否被自动拉起。
 - 不再需要把首台主机写入启动配置；主机接入全部经由统一添加机制，`host` 可选，既有静态首台主机配置仍兼容（提供 `host` 时行为不变）。
-- 浮层面板同时呈现已连接与可添加主机：连接（链环图标、loading、active 蓝成功态、官方 Toast）与断开（断联图标、`remove-host` 路由）形成双向闭环；配置预置主机断开后重启恢复，动态主机断开即移除可重新连接。
+- 浮层面板同时呈现已连接与可添加主机：连接（插头插入插座、loading、active 蓝成功态、官方 Toast）与断开（分离的插头插座图标、`remove-host` 路由）形成双向闭环；配置预置主机断开后重启恢复，动态主机断开即移除可重新连接。
 - 既有 smoke 套件（workspace-btn / settings-ui / manager / multi-host / route 等）保持通过，workspace-btn 与 manager smoke 增加对纯图标按钮、loading、Toast、无首台主机场景的断言；本轮再增已连接区/断联流程与 `connectedHosts`/`remove-host` 路由断言。

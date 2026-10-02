@@ -16,6 +16,16 @@ import { Context, Service } from '@deepseek-ai/cordis'
 const here = dirname(fileURLToPath(import.meta.url))
 const source = readFileSync(join(here, 'client.js'), 'utf8')
 
+// The connected icon must depict prongs entering the socket; the disconnected
+// icon depicts the same parts separated and deliberately has no slash mark.
+const connectIcon = source.match(/const CONNECT_ICON_SVG = '([^']+)'/)?.[1] || ''
+const disconnectIcon = source.match(/const DISCONNECT_ICON_SVG = '([^']+)'/)?.[1] || ''
+assert.match(connectIcon, /M6 6\.5v2\.5M10 6\.5v2\.5/, 'Connected plug prongs must enter the socket')
+assert.match(connectIcon, /<rect x="3\.5" y="9" width="9" height="4"/, 'Connected icon must show the socket face')
+assert.match(disconnectIcon, /M6 5\.25v1\.5M10 5\.25v1\.5/, 'Disconnected plug must be lifted clear of the socket')
+assert.match(disconnectIcon, /<rect x="3\.5" y="10" width="9" height="3\.5"/, 'Disconnected icon must show the lower socket face')
+assert.doesNotMatch(disconnectIcon, /M2\.5 13\.5L13\.5 2\.5|stroke-linecap="round"[^>]*\/?>.*L/, 'Disconnected icon must not use a slash')
+
 // Mini-DOM implementation
 class MiniElement {
   constructor(tagName) {
