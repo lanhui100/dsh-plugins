@@ -26,10 +26,11 @@ Status: implemented
   - tooltip `show()` 对已脱离 DOM 的 anchor 直接返回，杜绝 500ms 延迟窗口内的幽灵气泡；成功关闭窗口内按钮保持 disabled；浮层关闭路径统一移除 outside-click 监听（评审 A-P2-1 / P3）。
   - 静态 smoke 套件聚合为 `pnpm --filter dsh-plugin-remote-ssh test` 门禁命令；smoke 增加 HTMLCollection 语义回归守卫、tooltip 行为与幽灵气泡断言、成功态 disabled/图标恢复断言、无 primaryHost + 持久化恢复断言（评审 P2-4/5/6/7）。
 - **连接/断联语义与已连接主机管理（第二轮优化，同批落地）**：
-  - 浮层改为“已连接主机 / 可添加主机”两区：已连接主机始终展示，右侧为**断联图标按钮**（官方链环 + 断裂斜杠，active 蓝色 `--dsw-alias-state-business-primary`）；未连接主机右侧为**连接图标按钮**（官方链环 `IconLinkOutline`），彻底去掉 “＋” 的“重新添加”语义。
+  - 浮层改为“已连接主机 / 可添加主机”两区：已连接主机始终展示，右侧为**断联图标按钮**（插座 + 断裂斜杠，active 蓝色 `--dsw-alias-state-business-primary`）；未连接主机右侧为**连接图标按钮**（插头插入插座式样——链环与孤立插头在小尺寸下辨识度差，改用“插座 + 插入插头”这一远程连接通用隐喻），彻底去掉 “＋” 的“重新添加”语义。主机行带灰色圆角底（`--dsw-alias-bg-module-platform`）、hover 背景加深（`--dsw-alias-interactive-bg-hover`）。
   - Host 端新增 `RemoteHostManager.removeHost`（复用现有 dispose 链路，拒绝在 in-flight 连接期间移除）与 `POST /remote-ssh/remove-host` 路由；`GET /remote-ssh/available-hosts` 新增 `connectedHosts`（含 `~/.ssh/config` 详情的已连接主机），客户端断开成功后重取列表并刷新聚合。
   - 连接成功后按钮转为 active 蓝色成功图标（短暂态，随后浮层关闭）；`setAddBusy` 支持按按钮语义恢复图标（连接/断联各自还原）。
-  - 面板间距收紧（主机行 `gap: 4px`、内边距 6px），hover 改为背景色变化（`--dsw-alias-interactive-bg-hover`），不再使用边框。
+  - 面板间距收紧（主机行 `gap: 4px` → 后续再收紧至 `2px`、内边距 `6px → 4px`），hover 改为背景色变化（`--dsw-alias-interactive-bg-hover`），不再使用边框。
+  - **容错响应解析（用户反馈迭代）**：连接/断联/列表等所有 fetch 响应改走 `parseJsonResponse`（先 `text()` 后 `json()` 双通道、全程不抛），空/非 JSON 响应（如桌面端静态 fallback 应答未注册路由）显示友好错误“服务端无响应，请重启桌面端后重试”，不再向用户暴露 `Unexpected end of JSON input` 原始异常。
 
 ## Alternatives considered
 

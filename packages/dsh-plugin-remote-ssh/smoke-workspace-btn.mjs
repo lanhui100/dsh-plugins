@@ -265,6 +265,8 @@ globalThis.window = {
 const postedAddRequests = []
 /** Hosts sent to POST /remote-ssh/remove-host. */
 const postedRemoveRequests = []
+/** When true, remove-host answers with an empty body (route-missing fallback). */
+let removeHostEmptyBody = false
 /** Deferred resolver for the in-flight POST /remote-ssh/add-host request. */
 let addHostResolve = null
 globalThis.fetch = async (url, options) => {
@@ -311,6 +313,16 @@ globalThis.fetch = async (url, options) => {
   if (url === '/remote-ssh/remove-host' && method === 'POST') {
     const body = options?.body ? JSON.parse(options.body) : {}
     postedRemoveRequests.push(body)
+    if (removeHostEmptyBody) {
+      // Simulate the desktop static fallback answering an unknown route with an
+      // empty body — the client must not crash with "Unexpected end of JSON input".
+      return {
+        ok: true,
+        status: 200,
+        text: async () => '',
+        json: async () => { throw new Error('Unexpected end of JSON input') },
+      }
+    }
     return { ok: true, status: 200, json: async () => ({ ok: true, host: body.host }) }
   }
   return { ok: true, status: 200, json: async () => ({}) }
@@ -470,6 +482,29 @@ disconnectBtn.click()
 await new Promise((resolve) => setTimeout(resolve, 50))
 assert.equal(postedRemoveRequests.length, 1, 'POST /remote-ssh/remove-host must be dispatched on disconnect')
 assert.equal(postedRemoveRequests[0].host, 'dev')
+
+// 4c. Empty-body disconnect responses (route-missing fallback) must surface a
+//     friendly error instead of a raw "Unexpected end of JSON input" crash.
+removeHostEmptyBody = true
+const connectedItem2 = findSectionItem('connected')
+const disc2 = connectedItem2.querySelector('.dsh-remote-popover-item-btn')
+assert.ok(disc2, 'Connected section must still render after refresh')
+disc2.click()
+await new Promise((resolve) => setTimeout(resolve, 50))
+assert.equal(postedRemoveRequests.length, 2, 'second disconnect must be dispatched')
+const feedback2 = connectedItem2.parentElement && connectedItem2.parentElement.querySelector
+  ? connectedItem2.parentElement.querySelector('.dsh-popover-feedback')
+  : null
+assert.ok(feedback2, 'Disconnect row must expose a feedback seat')
+assert.ok(
+  feedback2.textContent.includes('断开失败'),
+  'Empty-body disconnect must show a friendly error, not a JSON parse crash',
+)
+assert.ok(
+  !feedback2.textContent.includes('Unexpected end of JSON input'),
+  'Raw JSON parse errors must never reach the user',
+)
+removeHostEmptyBody = false
 
 // 5. Available hosts section: unconnected hosts offer a connect action with a
 //    connection icon (no "+" re-add semantics).

@@ -1924,12 +1924,12 @@ window.__ModuleLoader__.load({
             overflow-y: auto;
             display: flex;
             flex-direction: column;
-            gap: 4px;
+            gap: 2px;
           }
           .dsh-popover-section {
             display: flex;
             flex-direction: column;
-            gap: 4px;
+            gap: 2px;
           }
           .dsh-popover-section-title {
             font-size: 11px;
@@ -1940,20 +1940,20 @@ window.__ModuleLoader__.load({
           .dsh-popover-section-list {
             display: flex;
             flex-direction: column;
-            gap: 4px;
+            gap: 2px;
           }
           .dsh-remote-popover-item {
             display: flex;
             align-items: center;
             justify-content: space-between;
             gap: 8px;
-            padding: 6px 10px;
+            padding: 4px 10px;
             border-radius: var(--dsw-radius-md, 8px);
-            background: transparent;
+            background: var(--dsw-alias-bg-module-platform, rgba(0, 0, 0, 0.04));
             transition: background 120ms ease;
           }
           .dsh-remote-popover-item:hover {
-            background: var(--dsw-alias-interactive-bg-hover, rgba(0, 0, 0, 0.05));
+            background: var(--dsw-alias-interactive-bg-hover, rgba(0, 0, 0, 0.08));
           }
           .dsh-remote-popover-item-info {
             flex: 1;
@@ -2188,7 +2188,8 @@ window.__ModuleLoader__.load({
       try {
         const res = await fetch(AVAILABLE_HOSTS_ROUTE)
         if (!res.ok) return
-        const data = await res.json()
+        const data = await parseJsonResponse(res)
+        if (!data) return
         const currentHosts = Array.isArray(data.currentHosts) ? data.currentHosts : []
         const availableHosts = Array.isArray(data.availableHosts) ? data.availableHosts : []
 
@@ -2330,8 +2331,8 @@ window.__ModuleLoader__.load({
             headers: { 'Content-Type': 'application/json' },
             body: JSON.stringify({ host }),
           })
-          const body = await res.json()
-          if (res.ok && body.ok) {
+          const body = await parseJsonResponse(res)
+          if (res.ok && body && body.ok) {
             feedbackEl.className = 'dsh-sc-feedback dsh-sc-success'
             feedbackEl.textContent = `主机 ${host} 添加成功！`
             if (ctx) {
@@ -2430,11 +2431,11 @@ window.__ModuleLoader__.load({
       if (popover) popover.remove()
     }
 
-    /** Official `IconLinkOutlineRegular` artwork — the "connect host" action icon. */
-    const CONNECT_ICON_SVG = '<svg width="16" height="16" viewBox="0 0 16 16" fill="none" xmlns="http://www.w3.org/2000/svg" aria-hidden="true"><path d="M6.59961 9.40051C6.82779 9.6334 7.10015 9.81842 7.40074 9.94472C7.70132 10.071 8.02409 10.1361 8.35013 10.1361C8.67618 10.1361 8.99894 10.071 9.29953 9.94472C9.60011 9.81842 9.87247 9.6334 10.1007 9.40051L12.9015 6.59967C13.3658 6.13541 13.6266 5.50572 13.6266 4.84915C13.6266 4.19258 13.3658 3.56289 12.9015 3.09863C12.4372 2.63436 11.8075 2.37354 11.151 2.37354C10.4944 2.37354 9.86472 2.63436 9.40045 3.09863L9.05034 3.44873" stroke="currentColor" stroke-width="1.2" stroke-linecap="round" stroke-linejoin="round"/><path d="M9.40051 6.59959C9.17233 6.3667 8.89997 6.18169 8.59939 6.05538C8.2988 5.92907 7.97603 5.86401 7.64999 5.86401C7.32395 5.86401 7.00118 5.92907 6.70059 6.05538C6.40001 6.18169 6.12765 6.3667 5.89946 6.59959L3.09863 9.40043C2.63436 9.8647 2.37354 10.4944 2.37354 11.151C2.37354 11.8075 2.63436 12.4372 3.09863 12.9015C3.56289 13.3657 4.19258 13.6266 4.84915 13.6266C5.50572 13.6266 6.13541 13.3657 6.59967 12.9015L6.94978 12.5514" stroke="currentColor" stroke-width="1.2" stroke-linecap="round" stroke-linejoin="round"/></svg>'
+    /** "Connect host" icon: plug prongs inserted into a wall socket. */
+    const CONNECT_ICON_SVG = '<svg width="16" height="16" viewBox="0 0 16 16" fill="none" xmlns="http://www.w3.org/2000/svg" aria-hidden="true"><rect x="3" y="6.75" width="10" height="4.5" rx="2.25" stroke="currentColor" stroke-width="1.4"/><path d="M6 3v6M10 3v6" stroke="currentColor" stroke-width="1.4" stroke-linecap="round"/></svg>'
 
-    /** "Disconnect host" action icon: the official link glyph with a break slash. */
-    const DISCONNECT_ICON_SVG = '<svg width="16" height="16" viewBox="0 0 16 16" fill="none" xmlns="http://www.w3.org/2000/svg" aria-hidden="true"><path d="M6.59961 9.40051C6.82779 9.6334 7.10015 9.81842 7.40074 9.94472C7.70132 10.071 8.02409 10.1361 8.35013 10.1361C8.67618 10.1361 8.99894 10.071 9.29953 9.94472C9.60011 9.81842 9.87247 9.6334 10.1007 9.40051L12.9015 6.59967C13.3658 6.13541 13.6266 5.50572 13.6266 4.84915C13.6266 4.19258 13.3658 3.56289 12.9015 3.09863C12.4372 2.63436 11.8075 2.37354 11.151 2.37354C10.4944 2.37354 9.86472 2.63436 9.40045 3.09863L9.05034 3.44873" stroke="currentColor" stroke-width="1.2" stroke-linecap="round" stroke-linejoin="round"/><path d="M9.40051 6.59959C9.17233 6.3667 8.89997 6.18169 8.59939 6.05538C8.2988 5.92907 7.97603 5.86401 7.64999 5.86401C7.32395 5.86401 7.00118 5.92907 6.70059 6.05538C6.40001 6.18169 6.12765 6.3667 5.89946 6.59959L3.09863 9.40043C2.63436 9.8647 2.37354 10.4944 2.37354 11.151C2.37354 11.8075 2.63436 12.4372 3.09863 12.9015C3.56289 13.3657 4.19258 13.6266 4.84915 13.6266C5.50572 13.6266 6.13541 13.3657 6.59967 12.9015L6.94978 12.5514" stroke="currentColor" stroke-width="1.2" stroke-linecap="round" stroke-linejoin="round"/><path d="M3.5 12.5L12.5 3.5" stroke="currentColor" stroke-width="1.2" stroke-linecap="round"/></svg>'
+    /** "Disconnect host" icon: socket with a break slash (unplug). */
+    const DISCONNECT_ICON_SVG = '<svg width="16" height="16" viewBox="0 0 16 16" fill="none" xmlns="http://www.w3.org/2000/svg" aria-hidden="true"><rect x="3" y="6.75" width="10" height="4.5" rx="2.25" stroke="currentColor" stroke-width="1.4"/><path d="M6 3v6M10 3v6" stroke="currentColor" stroke-width="1.4" stroke-linecap="round"/><path d="M13 3L3 13" stroke="currentColor" stroke-width="1.4" stroke-linecap="round"/></svg>'
 
     /** Official `IconCheckCircleOutlineRegular` artwork, used by the success toast. */
     const TOAST_SUCCESS_ICON_SVG = '<svg width="16" height="16" viewBox="0 0 16 16" fill="none" xmlns="http://www.w3.org/2000/svg" aria-hidden="true"><path d="M12.5303 6.53027L8.80273 10.2578C8.54967 10.5109 8.31796 10.7439 8.10645 10.9141C7.88375 11.0932 7.616 11.2602 7.27344 11.3145C7.09229 11.3431 6.90771 11.3431 6.72656 11.3145C6.384 11.2602 6.11625 11.0932 5.89355 10.9141C5.68204 10.7439 5.45033 10.5109 5.19727 10.2578L3.46973 8.53027L4.53027 7.46973L6.25781 9.19727C6.53457 9.47402 6.70036 9.63859 6.83398 9.74609C6.95637 9.84453 6.98241 9.83644 6.96094 9.83301C6.98679 9.83709 7.01321 9.83709 7.03906 9.83301C7.01759 9.83644 7.04363 9.84453 7.16602 9.74609C7.29964 9.63859 7.46543 9.47402 7.74219 9.19727L11.4697 5.46973L12.5303 6.53027Z" fill="currentColor"/><path d="M14.5996 8C14.5996 4.35492 11.6451 1.40039 8 1.40039C4.35492 1.40039 1.40039 4.35492 1.40039 8C1.40039 11.6451 4.35492 14.5996 8 14.5996C11.6451 14.5996 14.5996 11.6451 14.5996 8ZM15.9004 8C15.9004 12.363 12.363 15.9004 8 15.9004C3.63695 15.9004 0.0996094 12.363 0.0996094 8C0.0996094 3.63695 3.63695 0.0996094 8 0.0996094C12.363 0.0996094 15.9004 3.63695 15.9004 8Z" fill="currentColor"/></svg>'
@@ -2532,6 +2533,28 @@ window.__ModuleLoader__.load({
           anchor.removeEventListener('click', cancelAndHide)
         }
       }
+    }
+
+    /**
+     * Parse a fetch response as JSON without ever throwing on an empty or
+     * non-JSON body (e.g. the desktop static fallback answering an unknown
+     * route with an empty body). Returns null when the body cannot be parsed.
+     */
+    async function parseJsonResponse(res) {
+      if (!res) return null
+      try {
+        if (typeof res.text === 'function') {
+          const text = await res.text()
+          if (typeof text === 'string' && text.trim() !== '') return JSON.parse(text)
+        }
+      } catch {}
+      try {
+        if (typeof res.json === 'function') {
+          const data = await res.json()
+          if (data !== null && data !== undefined) return data
+        }
+      } catch {}
+      return null
     }
 
     /** Toggle a host-action button between idle (icon) and connecting (spinner). */
@@ -2707,7 +2730,7 @@ window.__ModuleLoader__.load({
       const refresh = async () => {
         const res = await fetch(AVAILABLE_HOSTS_ROUTE)
         if (!res.ok) return
-        const next = await res.json().catch(() => null)
+        const next = await parseJsonResponse(res)
         if (!next) return
         render(next)
       }
@@ -2747,8 +2770,8 @@ window.__ModuleLoader__.load({
                   headers: { 'Content-Type': 'application/json' },
                   body: JSON.stringify({ host: item.host }),
                 })
-                const postData = await postRes.json()
-                if (postRes.ok && postData.ok) {
+                const postData = await parseJsonResponse(postRes)
+                if (postRes.ok && postData && postData.ok) {
                   if (ctx) {
                     void reconcileRemoteSource(ctx)
                   }
@@ -2756,7 +2779,7 @@ window.__ModuleLoader__.load({
                 } else {
                   setAddBusy(discBtn, false, DISCONNECT_ICON_SVG)
                   feedbackEl.className = 'dsh-popover-feedback dsh-feedback-error'
-                  feedbackEl.textContent = postData.error || postData.message || '断开失败'
+                  feedbackEl.textContent = postData?.error || postData?.message || '断开失败：服务端无响应，请重启桌面端后重试'
                 }
               } catch (err) {
                 setAddBusy(discBtn, false, DISCONNECT_ICON_SVG)
@@ -2803,8 +2826,8 @@ window.__ModuleLoader__.load({
                   headers: { 'Content-Type': 'application/json' },
                   body: JSON.stringify({ host: item.host }),
                 })
-                const postData = await postRes.json()
-                if (postRes.ok && postData.ok) {
+                const postData = await parseJsonResponse(postRes)
+                if (postRes.ok && postData && postData.ok) {
                   // Success state: the icon flips to a blue success glyph and the
                   // button stays disabled until the popover closes (700ms), so the
                   // window cannot trigger a duplicate add + toast.
@@ -2825,7 +2848,7 @@ window.__ModuleLoader__.load({
                 } else {
                   setAddBusy(addBtn, false)
                   feedbackEl.className = 'dsh-popover-feedback dsh-feedback-error'
-                  feedbackEl.textContent = postData.error || postData.message || '连接主机失败'
+                  feedbackEl.textContent = postData?.error || postData?.message || '连接主机失败：服务端无响应，请重启桌面端后重试'
                 }
               } catch (err) {
                 setAddBusy(addBtn, false)
@@ -2848,7 +2871,11 @@ window.__ModuleLoader__.load({
           body.textContent = '获取可用主机失败'
           return
         }
-        const data = await res.json()
+        const data = await parseJsonResponse(res)
+        if (!data) {
+          body.textContent = '获取可用主机失败（响应为空）'
+          return
+        }
         render(data)
       } catch (err) {
         body.textContent = `加载失败: ${err.message || err}`
