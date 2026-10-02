@@ -45,6 +45,19 @@ window.__ModuleLoader__.load({
     /** Refresh the remote workspace/session projection this often (ms). */
     const POLL_INTERVAL_MS = 60_000
 
+    /** Official Tooltip hover delay used by the workspace header icons (ms). */
+    const TOOLTIP_DELAY_MS = 500
+    /** Official Tooltip anchor-to-bubble gap (px). */
+    const TOOLTIP_GAP = 8
+    /** Official Tooltip viewport edge margin (px). */
+    const TOOLTIP_EDGE_MARGIN = 12
+    /** Official Toast full-opacity hold before the fade starts (ms). */
+    const TOAST_HOLD_MS = 3_000
+    /** Official Toast fade duration (ms). */
+    const TOAST_FADE_MS = 1_000
+    /** Official Toast top offset from the viewport (px). */
+    const TOAST_TOP_PX = 40
+
     /** Known remote session ids, the proxy decision set. */
     const remoteSessionIds = new Set()
     /** Known remote archived session ids from authoritative remote baseline. */
@@ -1835,26 +1848,28 @@ window.__ModuleLoader__.load({
             color: #ef4444;
           }
 
-          /* Workspace Header Add Remote Button */
+          /* Workspace Header Add Remote Button — mirrors official .iconButton */
           .dsh-btn-add-remote-workspace {
             display: inline-flex;
             align-items: center;
             justify-content: center;
-            width: 24px;
-            height: 24px;
+            width: 28px;
+            height: 28px;
             padding: 0;
-            margin-right: 4px;
             border: none;
             border-radius: var(--dsw-radius-sm, 6px);
             background: transparent;
             color: var(--dsw-alias-label-secondary, #64748b);
             cursor: pointer;
-            flex-shrink: 0;
-            transition: all 120ms ease;
+            flex: none;
+            transition: background 120ms ease, color 120ms ease;
           }
           .dsh-btn-add-remote-workspace:hover {
             background: var(--dsw-alias-interactive-bg-hover, rgba(0, 0, 0, 0.05));
-            color: var(--dsw-alias-label-primary, inherit);
+          }
+          .dsh-btn-add-remote-workspace:focus-visible {
+            outline: var(--dsw-focus-ring-width, 2px) solid var(--dsw-focus-ring-color, var(--dsw-alias-state-business-primary, #2563eb));
+            outline-offset: -2px;
           }
           .dsh-add-remote-popover {
             position: fixed;
@@ -1941,13 +1956,33 @@ window.__ModuleLoader__.load({
             overflow: hidden;
             text-overflow: ellipsis;
           }
+          /* Minimal icon-only add button inside the popover host rows */
           .dsh-remote-popover-item-btn {
+            display: inline-flex;
+            align-items: center;
+            justify-content: center;
             flex-shrink: 0;
-            padding: 4px 10px;
-            font-size: 12px;
+            width: 28px;
             height: 28px;
+            padding: 0;
+            border: none;
             border-radius: var(--dsw-radius-sm, 6px);
+            background: transparent;
+            color: var(--dsw-alias-label-secondary, #64748b);
             cursor: pointer;
+            transition: background 120ms ease, color 120ms ease;
+          }
+          .dsh-remote-popover-item-btn:hover {
+            background: var(--dsw-alias-interactive-bg-hover, rgba(0, 0, 0, 0.05));
+            color: var(--dsw-alias-label-primary, inherit);
+          }
+          .dsh-remote-popover-item-btn:focus-visible {
+            outline: var(--dsw-focus-ring-width, 2px) solid var(--dsw-focus-ring-color, var(--dsw-alias-state-business-primary, #2563eb));
+            outline-offset: -2px;
+          }
+          .dsh-remote-popover-item-btn:disabled {
+            cursor: default;
+            opacity: 0.75;
           }
           .dsh-popover-empty {
             text-align: center;
@@ -1970,6 +2005,109 @@ window.__ModuleLoader__.load({
           }
           .dsh-popover-feedback.dsh-feedback-error {
             color: #ef4444;
+          }
+
+          /* Official-style Tooltip bubble (mirrors Tooltip.module.css tokens) */
+          .dsh-remote-tooltip {
+            display: inline-flex;
+            align-items: center;
+            gap: 8px;
+            position: fixed;
+            z-index: 100;
+            width: max-content;
+            max-width: 50vw;
+            padding: 3px 7px;
+            border-radius: var(--dsw-radius-sm, 6px);
+            background: var(--dsw-alias-tooltip-bg, #0f1115);
+            color: var(--dsw-static-neutral-bluish-00, #f9fafb);
+            font-size: 13px;
+            line-height: 20px;
+            white-space: pre-line;
+            overflow-wrap: break-word;
+            pointer-events: none;
+            animation: dsh-remote-tooltip-in 150ms var(--ds-ease-in-out, ease);
+          }
+          .dsh-remote-tooltip[data-side='bottom'] {
+            transform: translateX(-50%);
+          }
+          .dsh-remote-tooltip[data-side='top'] {
+            transform: translate(-50%, -100%);
+          }
+          .dsh-remote-tooltip[data-side='right'] {
+            transform: translateY(-50%);
+          }
+          .dsh-remote-tooltip-label {
+            min-width: 0;
+          }
+          @keyframes dsh-remote-tooltip-in {
+            from { opacity: 0; }
+          }
+          @media (prefers-reduced-motion: reduce) {
+            .dsh-remote-tooltip {
+              animation: none;
+            }
+          }
+
+          /* Official-style success Toast (mirrors Toast.module.css tokens) */
+          .dsh-remote-toast {
+            position: fixed;
+            top: 40px;
+            left: 50%;
+            z-index: 1100;
+            pointer-events: none;
+            display: flex;
+            align-items: center;
+            gap: 10px;
+            width: max-content;
+            max-width: min(640px, calc(100vw - 48px));
+            padding: 12px 16px;
+            border-radius: var(--dsw-radius-lg, 12px);
+            background: var(--dsw-alias-toast-bg, #1f2937);
+            color: var(--dsw-alias-toast-label, #f9fafb);
+            font-size: 14px;
+            line-height: 22px;
+            box-shadow: var(--dsw-shadow-lv3, 0 10px 25px -5px rgba(0, 0, 0, 0.15));
+            transform: translateX(-50%);
+            animation:
+              dsh-remote-toast-in 160ms ease-out,
+              dsh-remote-toast-fade 1000ms ease var(--dsh-toast-hold, 3000ms) forwards;
+          }
+          .dsh-remote-toast-icon {
+            display: grid;
+            place-items: center;
+            flex: none;
+            color: var(--dsw-alias-state-warn-label, #f59e0b);
+          }
+          .dsh-remote-toast-icon--success {
+            color: var(--dsw-alias-state-success-primary, #10b981);
+          }
+          .dsh-remote-toast-text {
+            min-width: 0;
+          }
+          @keyframes dsh-remote-toast-in {
+            from { opacity: 0; transform: translate(-50%, -6px); }
+            to { opacity: 1; transform: translate(-50%, 0); }
+          }
+          @keyframes dsh-remote-toast-fade {
+            to { opacity: 0; visibility: hidden; }
+          }
+          @media (prefers-reduced-motion: reduce) {
+            .dsh-remote-toast {
+              animation: dsh-remote-toast-fade 1000ms ease var(--dsh-toast-hold, 3000ms) forwards;
+            }
+          }
+
+          /* Loading spinner used by the host add icon button while connecting */
+          .dsh-remote-spinner {
+            width: 16px;
+            height: 16px;
+            border-radius: 50%;
+            border: 2px solid var(--dsw-alias-border-l2, rgba(0, 0, 0, 0.12));
+            border-top-color: var(--dsw-alias-label-secondary, #64748b);
+            animation: dsh-remote-spin 0.8s linear infinite;
+          }
+          @keyframes dsh-remote-spin {
+            to { transform: rotate(360deg); }
           }
         `
         document.head.appendChild(tag)
@@ -2190,26 +2328,228 @@ window.__ModuleLoader__.load({
       void refreshSettingsCard(card, ctx)
     }
 
+    function findWorkspaceSectionHeader() {
+      if (typeof document === 'undefined') return null
+      // Scope the search to the official workspace browser section header so
+      // unrelated nodes elsewhere in the DOM (e.g. other "searchSlot"-ish
+      // classes from other surfaces) can never hijack the button placement.
+      return document.querySelector('[class*="sectionHeader"]') || null
+    }
+
     function findWorkspaceSearchSlot() {
       if (typeof document === 'undefined') return null
-      return (
-        document.querySelector('.WorkspaceBrowser_searchSlot') ||
-        document.querySelector('[class*="searchSlot"]') ||
-        document.querySelector('.WorkspaceBrowser_search') ||
-        document.querySelector('[class*="sectionHeader"] [class*="search"]')
-      )
+      const header = findWorkspaceSectionHeader()
+      if (header && typeof header.querySelector === 'function') {
+        const slot = header.querySelector('[class*="searchSlot"]')
+        if (slot) return slot
+      }
+      return document.querySelector('.WorkspaceBrowser_searchSlot') || null
+    }
+
+    function findWorkspaceHeaderActions() {
+      if (typeof document === 'undefined') return null
+      const header = findWorkspaceSectionHeader()
+      if (!header || typeof header.querySelector !== 'function') return null
+      return header.querySelector('[class*="headerActions"]') || null
+    }
+
+    /**
+     * Pin the add-remote button to the expected slot: immediately left of the
+     * search icon in the wide header, or as the leftmost action of the
+     * right-aligned header actions group in the rail header. Repositions when
+     * the official header re-renders (wide <-> rail toggles swap children).
+     * @returns true when the button is (or gets) attached to the header.
+     */
+    function repositionWorkspaceAddButton(btn) {
+      if (typeof document === 'undefined' || !btn) return false
+      const searchSlot = findWorkspaceSearchSlot()
+      const headerActions = findWorkspaceHeaderActions()
+      const header = findWorkspaceSectionHeader()
+      if (!header) return false
+      if (searchSlot && searchSlot.parentElement && searchSlot.parentElement === header) {
+        const children = Array.from(header.children)
+        const slotIdx = children.indexOf(searchSlot)
+        const btnIdx = children.indexOf(btn)
+        if (slotIdx !== -1 && btnIdx !== slotIdx - 1) {
+          header.insertBefore(btn, searchSlot)
+        }
+        return true
+      }
+      if (headerActions) {
+        if (headerActions.children[0] !== btn) {
+          headerActions.insertBefore(btn, headerActions.firstChild || null)
+        }
+        return true
+      }
+      if (header.children[header.children.length - 1] !== btn) header.appendChild(btn)
+      return true
     }
 
     function removeWorkspaceAddButton() {
       if (typeof document === 'undefined') return
       const btn = (typeof document.getElementById === 'function' ? document.getElementById('dsh-add-remote-workspace-btn') : null) || document.querySelector?.('#dsh-add-remote-workspace-btn')
-      if (btn) btn.remove()
+      if (btn) {
+        if (typeof btn._dshTooltipDisposer === 'function') {
+          try { btn._dshTooltipDisposer() } catch {}
+        }
+        btn.remove()
+      }
     }
 
     function removeAddRemotePopover() {
       if (typeof document === 'undefined') return
       const popover = (typeof document.getElementById === 'function' ? document.getElementById('dsh-add-remote-popover') : null) || document.querySelector?.('#dsh-add-remote-popover')
       if (popover) popover.remove()
+    }
+
+    /** Official `IconPlusOutlineRegular` artwork, used by host add icon buttons. */
+    const PLUS_ICON_SVG = '<svg width="16" height="16" viewBox="0 0 16 16" fill="none" xmlns="http://www.w3.org/2000/svg" aria-hidden="true"><path d="M8 2V14" stroke="currentColor" stroke-width="1.2" stroke-linecap="round"/><path d="M2 8H14" stroke="currentColor" stroke-width="1.2" stroke-linecap="round"/></svg>'
+
+    /** Official `IconCheckCircleOutlineRegular` artwork, used by the success toast. */
+    const TOAST_SUCCESS_ICON_SVG = '<svg width="16" height="16" viewBox="0 0 16 16" fill="none" xmlns="http://www.w3.org/2000/svg" aria-hidden="true"><path d="M12.5303 6.53027L8.80273 10.2578C8.54967 10.5109 8.31796 10.7439 8.10645 10.9141C7.88375 11.0932 7.616 11.2602 7.27344 11.3145C7.09229 11.3431 6.90771 11.3431 6.72656 11.3145C6.384 11.2602 6.11625 11.0932 5.89355 10.9141C5.68204 10.7439 5.45033 10.5109 5.19727 10.2578L3.46973 8.53027L4.53027 7.46973L6.25781 9.19727C6.53457 9.47402 6.70036 9.63859 6.83398 9.74609C6.95637 9.84453 6.98241 9.83644 6.96094 9.83301C6.98679 9.83709 7.01321 9.83709 7.03906 9.83301C7.01759 9.83644 7.04363 9.84453 7.16602 9.74609C7.29964 9.63859 7.46543 9.47402 7.74219 9.19727L11.4697 5.46973L12.5303 6.53027Z" fill="currentColor"/><path d="M14.5996 8C14.5996 4.35492 11.6451 1.40039 8 1.40039C4.35492 1.40039 1.40039 4.35492 1.40039 8C1.40039 11.6451 4.35492 14.5996 8 14.5996C11.6451 14.5996 14.5996 11.6451 14.5996 8ZM15.9004 8C15.9004 12.363 12.363 15.9004 8 15.9004C3.63695 15.9004 0.0996094 12.363 0.0996094 8C0.0996094 3.63695 3.63695 0.0996094 8 0.0996094C12.363 0.0996094 15.9004 3.63695 15.9004 8Z" fill="currentColor"/></svg>'
+
+    /**
+     * Vanilla replica of the official Tooltip (side "bottom", hover delay 500ms):
+     * a fixed-position bubble with `role="tooltip"` whose styling mirrors the
+     * official Tooltip.module.css tokens, so the workspace header button tooltip
+     * matches the official icon buttons (search / view options / add workspace).
+     * @param anchor - the button element the tooltip attaches to.
+     * @param label - tooltip text.
+     * @param options - `side` (default "bottom"), `delayMs` (default 500), `gap` (default 8).
+     * @returns disposer removing listeners and any open bubble.
+     */
+    function attachTooltip(anchor, label, options = {}) {
+      if (typeof document === 'undefined' || !anchor || typeof anchor.addEventListener !== 'function') return () => {}
+      const side = options.side || 'bottom'
+      const delayMs = typeof options.delayMs === 'number' ? options.delayMs : TOOLTIP_DELAY_MS
+      const gap = typeof options.gap === 'number' ? options.gap : TOOLTIP_GAP
+      let bubble = null
+      let timer = null
+
+      const removeBubble = () => {
+        if (bubble) {
+          if (bubble.parentElement && typeof bubble.parentElement.removeChild === 'function') {
+            bubble.parentElement.removeChild(bubble)
+          }
+          bubble = null
+        }
+      }
+      const cancelTimer = () => {
+        if (timer !== null) {
+          clearTimeout(timer)
+          timer = null
+        }
+      }
+
+      const show = () => {
+        // The anchor may be removed by an official re-render while the hover
+        // delay is pending; never position a bubble for a detached anchor.
+        if (typeof document === 'undefined' || typeof anchor.getBoundingClientRect !== 'function') return
+        if (typeof anchor.isConnected === 'boolean' && !anchor.isConnected) return
+        removeBubble()
+        const rect = anchor.getBoundingClientRect()
+        if (!rect || typeof rect.top !== 'number') return
+        const win = typeof window !== 'undefined' ? window : { innerWidth: 0, innerHeight: 0 }
+        bubble = document.createElement('div')
+        bubble.className = 'dsh-remote-tooltip'
+        bubble.setAttribute('role', 'tooltip')
+        const labelEl = document.createElement('span')
+        labelEl.className = 'dsh-remote-tooltip-label'
+        labelEl.textContent = label
+        bubble.appendChild(labelEl)
+        document.body.appendChild(bubble)
+        const width = bubble.offsetWidth || 0
+        const height = bubble.offsetHeight || 0
+        let placement = side === 'top' ? 'top' : 'bottom'
+        const fitsBelow = rect.bottom + gap + height <= win.innerHeight - TOOLTIP_EDGE_MARGIN
+        const fitsAbove = rect.top - gap - height >= TOOLTIP_EDGE_MARGIN
+        if (side === 'bottom' && !fitsBelow && fitsAbove) placement = 'top'
+        else if (side === 'top' && !fitsAbove && fitsBelow) placement = 'bottom'
+        const offset = width / 2
+        const left = Math.max(TOOLTIP_EDGE_MARGIN, Math.min(rect.left + rect.width / 2 - offset, win.innerWidth - TOOLTIP_EDGE_MARGIN - width))
+        bubble.dataset.side = placement
+        bubble.style.left = `${left + offset}px`
+        bubble.style.top = `${placement === 'top' ? rect.top - gap : rect.bottom + gap}px`
+      }
+
+      const scheduleShow = () => {
+        cancelTimer()
+        timer = setTimeout(() => {
+          timer = null
+          show()
+        }, delayMs)
+      }
+      const cancelAndHide = () => {
+        cancelTimer()
+        removeBubble()
+      }
+
+      anchor.addEventListener('mouseenter', scheduleShow)
+      anchor.addEventListener('mouseleave', cancelAndHide)
+      anchor.addEventListener('focus', scheduleShow)
+      anchor.addEventListener('blur', cancelAndHide)
+      anchor.addEventListener('click', cancelAndHide)
+
+      return () => {
+        cancelTimer()
+        removeBubble()
+        if (typeof anchor.removeEventListener === 'function') {
+          anchor.removeEventListener('mouseenter', scheduleShow)
+          anchor.removeEventListener('mouseleave', cancelAndHide)
+          anchor.removeEventListener('focus', scheduleShow)
+          anchor.removeEventListener('blur', cancelAndHide)
+          anchor.removeEventListener('click', cancelAndHide)
+        }
+      }
+    }
+
+    /** Toggle a host-add button between idle (plus icon) and connecting (spinner). */
+    function setAddBusy(btn, busy) {
+      if (!btn) return
+      btn.disabled = busy
+      if (typeof btn.setAttribute === 'function') {
+        btn.setAttribute('aria-busy', busy ? 'true' : 'false')
+      }
+      if (typeof btn.textContent === 'string') btn.textContent = ''
+      if (busy) {
+        const spinner = document.createElement('span')
+        spinner.className = 'dsh-remote-spinner'
+        spinner.setAttribute('aria-hidden', 'true')
+        btn.appendChild(spinner)
+      } else {
+        btn.innerHTML = PLUS_ICON_SVG
+      }
+    }
+
+    /**
+     * Official-style success toast (role="alert", top-center, dark surface,
+     * success check-circle, auto fade): mirrors the official Toast.module.css
+     * look using the same design tokens and keyframe values.
+     * @param text - the toast copy.
+     */
+    function showRemoteToast(text) {
+      if (typeof document === 'undefined') return
+      const existing = document.querySelectorAll('.dsh-remote-toast')
+      const toast = document.createElement('div')
+      toast.className = 'dsh-remote-toast'
+      toast.setAttribute('role', 'alert')
+      toast.style['--dsh-toast-hold'] = `${TOAST_HOLD_MS}ms`
+      toast.style.top = `${TOAST_TOP_PX + existing.length * 8}px`
+      const icon = document.createElement('span')
+      icon.className = 'dsh-remote-toast-icon dsh-remote-toast-icon--success'
+      icon.setAttribute('aria-hidden', 'true')
+      icon.innerHTML = TOAST_SUCCESS_ICON_SVG
+      const textEl = document.createElement('span')
+      textEl.className = 'dsh-remote-toast-text'
+      textEl.textContent = text
+      toast.appendChild(icon)
+      toast.appendChild(textEl)
+      document.body.appendChild(toast)
+      setTimeout(() => {
+        if (toast.parentElement && typeof toast.parentElement.removeChild === 'function') {
+          toast.parentElement.removeChild(toast)
+        }
+      }, TOAST_HOLD_MS + TOAST_FADE_MS)
     }
 
     async function toggleAddRemotePopover(btn, ctx) {
@@ -2227,8 +2567,13 @@ window.__ModuleLoader__.load({
       if (typeof btn.getBoundingClientRect === 'function') {
         const rect = btn.getBoundingClientRect()
         popover.style.top = `${(rect.bottom || 0) + 6}px`
-        popover.style.left = `${Math.max(10, (rect.left || 0) - 100)}px`
+        const viewportWidth = typeof window !== 'undefined' && window.innerWidth ? window.innerWidth : 640
+        // Clamp both edges: 320px card + 10px viewport margin.
+        popover.style.left = `${Math.max(10, Math.min((rect.left || 0) - 100, viewportWidth - 330))}px`
       }
+
+      /** Removes the outside-click listener; wired into every close path. */
+      let removeOutsideClickListener = () => {}
 
       const header = document.createElement('div')
       header.className = 'dsh-popover-header'
@@ -2245,6 +2590,7 @@ window.__ModuleLoader__.load({
       closeBtn.setAttribute('aria-label', '关闭')
       closeBtn.addEventListener('click', (ev) => {
         if (ev && typeof ev.stopPropagation === 'function') ev.stopPropagation()
+        removeOutsideClickListener()
         popover.remove()
       })
       header.appendChild(titleRow)
@@ -2270,10 +2616,13 @@ window.__ModuleLoader__.load({
         const isContains = typeof popover.contains === 'function' ? popover.contains(e.target) : false
         const isBtn = e.target === btn || (typeof btn.contains === 'function' && btn.contains(e.target))
         if (!isContains && !isBtn) {
+          removeOutsideClickListener()
           popover.remove()
-          if (typeof document.removeEventListener === 'function') {
-            document.removeEventListener('pointerdown', handleOutsideClick)
-          }
+        }
+      }
+      removeOutsideClickListener = () => {
+        if (typeof document.removeEventListener === 'function') {
+          document.removeEventListener('pointerdown', handleOutsideClick)
         }
       }
       setTimeout(() => {
@@ -2321,19 +2670,19 @@ window.__ModuleLoader__.load({
           infoEl.appendChild(detailEl)
 
           const addBtn = document.createElement('button')
-          addBtn.className = 'dsw-button dsw-button--primary dsh-remote-popover-item-btn'
+          addBtn.className = 'dsh-remote-popover-item-btn'
           addBtn.type = 'button'
-          addBtn.textContent = '添加'
+          addBtn.setAttribute('aria-label', `添加主机 ${item.host}`)
+          addBtn.innerHTML = PLUS_ICON_SVG
 
           const feedbackEl = document.createElement('div')
           feedbackEl.className = 'dsh-popover-feedback'
 
           const doAdd = async (ev) => {
             if (ev && typeof ev.stopPropagation === 'function') ev.stopPropagation()
-            addBtn.disabled = true
-            addBtn.textContent = '连接中...'
+            setAddBusy(addBtn, true)
             feedbackEl.className = 'dsh-popover-feedback'
-            feedbackEl.textContent = '正在检测远端服务并建立隧道...'
+            feedbackEl.textContent = '正在检测远端 dsh 服务并建立隧道...'
             try {
               const postRes = await fetch(ADD_HOST_ROUTE, {
                 method: 'POST',
@@ -2342,26 +2691,29 @@ window.__ModuleLoader__.load({
               })
               const postData = await postRes.json()
               if (postRes.ok && postData.ok) {
-                feedbackEl.className = 'dsh-popover-feedback dsh-feedback-success'
-                feedbackEl.textContent = postData.autoStarted ? '已自动拉起远端服务并成功连接！' : '主机连接成功！'
-                addBtn.textContent = '已连接'
+                // Stay disabled (icon restored) until the popover closes, so the
+                // 700ms close window cannot trigger a duplicate add + toast.
+                setAddBusy(addBtn, false)
+                addBtn.disabled = true
+                const hostName = typeof postData.host === 'string' && postData.host ? postData.host : item.host
+                const autoStarted = Boolean(postData.autoStarted)
+                showRemoteToast(`主机 ${hostName} 连接成功${autoStarted ? '，并已在远端自动启动 dsh 服务' : ''}`)
                 if (ctx) {
                   void reconcileRemoteSource(ctx)
                 }
                 setTimeout(() => {
+                  removeOutsideClickListener()
                   popover.remove()
-                }, 900)
+                }, 700)
               } else {
+                setAddBusy(addBtn, false)
                 feedbackEl.className = 'dsh-popover-feedback dsh-feedback-error'
                 feedbackEl.textContent = postData.error || postData.message || '添加主机失败'
-                addBtn.disabled = false
-                addBtn.textContent = '重试'
               }
             } catch (err) {
+              setAddBusy(addBtn, false)
               feedbackEl.className = 'dsh-popover-feedback dsh-feedback-error'
               feedbackEl.textContent = String(err.message || err)
-              addBtn.disabled = false
-              addBtn.textContent = '重试'
             }
           }
 
@@ -2385,27 +2737,38 @@ window.__ModuleLoader__.load({
 
     function checkAndRenderWorkspaceAddButton(ctx) {
       if (typeof document === 'undefined') return
-      const searchSlot = findWorkspaceSearchSlot()
-      if (!searchSlot || !searchSlot.parentElement) return
-
       const existingBtn = (typeof document.getElementById === 'function' ? document.getElementById('dsh-add-remote-workspace-btn') : null) || document.querySelector?.('#dsh-add-remote-workspace-btn')
-      if (existingBtn) return
+      if (existingBtn) {
+        // If the official React re-render already detached the button, drop the
+        // stale node and re-create it below; otherwise only re-pin the position
+        // when it drifted (wide <-> rail toggles) — never fight every mutation.
+        if (typeof existingBtn.isConnected === 'boolean' && !existingBtn.isConnected) {
+          try { existingBtn.remove() } catch {}
+        } else {
+          repositionWorkspaceAddButton(existingBtn)
+          return
+        }
+      }
 
       const btn = document.createElement('button')
       btn.id = 'dsh-add-remote-workspace-btn'
       btn.className = 'dsh-btn-add-remote-workspace'
       btn.type = 'button'
-      btn.title = '添加远程工作区 (SSH)'
       btn.setAttribute('aria-label', '添加远程工作区')
 
-      btn.innerHTML = `<svg width="14" height="14" viewBox="0 0 16 16" fill="none" xmlns="http://www.w3.org/2000/svg"><rect x="2" y="2" width="12" height="4.5" rx="1" stroke="currentColor" stroke-width="1.2"/><circle cx="4.5" cy="4.25" r="0.75" fill="currentColor"/><rect x="2" y="8" width="7" height="4.5" rx="1" stroke="currentColor" stroke-width="1.2"/><circle cx="4.5" cy="10.25" r="0.75" fill="currentColor"/><path d="M12.5 8.5V13.5M10 11H15" stroke="currentColor" stroke-width="1.3" stroke-linecap="round"/></svg>`
+      btn.innerHTML = `<svg width="16" height="16" viewBox="0 0 16 16" fill="none" xmlns="http://www.w3.org/2000/svg" aria-hidden="true"><rect x="2" y="2" width="12" height="4.5" rx="1" stroke="currentColor" stroke-width="1.2"/><circle cx="4.5" cy="4.25" r="0.75" fill="currentColor"/><rect x="2" y="8" width="7" height="4.5" rx="1" stroke="currentColor" stroke-width="1.2"/><circle cx="4.5" cy="10.25" r="0.75" fill="currentColor"/><path d="M12.5 8.5V13.5M10 11H15" stroke="currentColor" stroke-width="1.3" stroke-linecap="round"/></svg>`
+
+      // Official-style tooltip (side "bottom", 500ms hover delay) instead of the
+      // native `title` attribute, matching the search / view-options / add-workspace
+      // icon buttons' tooltips.
+      btn._dshTooltipDisposer = attachTooltip(btn, '添加远程工作区', { side: 'bottom', delayMs: TOOLTIP_DELAY_MS })
 
       btn.addEventListener('click', (ev) => {
         if (ev && typeof ev.stopPropagation === 'function') ev.stopPropagation()
         void toggleAddRemotePopover(btn, ctx)
       })
 
-      searchSlot.parentElement.insertBefore(btn, searchSlot)
+      if (!repositionWorkspaceAddButton(btn)) return
     }
 
     function installTitleDecorator(ctx) {

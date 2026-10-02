@@ -61,6 +61,45 @@ try {
 
   assert.deepEqual(mgr2.getHostNames().sort(), ['dev', 'preprod'].sort(), 'Restored manager must contain preprod from disk')
 
+  // 6. Manager must start empty when no primary host is configured (dynamic-only
+  //    host addition through POST /remote-ssh/add-host). Fresh storage so the
+  //    persisted dev/preprod entries above do not leak in.
+  const emptyStorePath = join(tmpdir(), `dsh-remote-hosts-empty-${Date.now()}.json`)
+  const mgrEmpty = new RemoteHostManager({
+    primaryRemotePort: 3080,
+    primaryLocalPort: 39387,
+    storagePath: emptyStorePath,
+  })
+  assert.deepEqual(mgrEmpty.getHostNames(), [], 'Manager must start with no hosts when primaryHost is omitted')
+
+  // 7. A blank/whitespace primaryHost must be treated the same as omitted.
+  const mgrBlank = new RemoteHostManager({
+    primaryHost: '   ',
+    primaryRemotePort: 3080,
+    primaryLocalPort: 39387,
+    storagePath: emptyStorePath,
+  })
+  assert.deepEqual(mgrBlank.getHostNames(), [], 'Blank primaryHost must not register a host')
+
+  // 8. Dynamic-only startup (no primaryHost) restores previously persisted
+  //    hosts from disk — the real restart path for hosts added via the UI.
+  const restoreStorePath = join(tmpdir(), `dsh-remote-hosts-restore-${Date.now()}.json`)
+  writeFileSync(restoreStorePath, JSON.stringify({ hosts: [{ host: 'persisted-host', remotePort: 3080, localPort: 39389 }] }), 'utf8')
+  const mgrRestore = new RemoteHostManager({
+    primaryRemotePort: 3080,
+    primaryLocalPort: 39387,
+    storagePath: restoreStorePath,
+  })
+  assert.deepEqual(
+    mgrRestore.getHostNames(),
+    ['persisted-host'],
+    'Dynamic-only manager must restore previously persisted hosts from disk',
+  )
+
+  try {
+    if (existsSync(restoreStorePath)) unlinkSync(restoreStorePath)
+  } catch {}
+
   console.log('all smoke-manager assertions passed cleanly!')
 } finally {
   try {

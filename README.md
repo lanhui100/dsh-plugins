@@ -35,10 +35,10 @@
        - id: remote-ssh
          name: "dsh-plugin-remote-ssh"
          config:
-           host: "dev"
            remotePort: 3080
            localPort: 39387
    ```
+   `host` 可省略（不预置任何主机）：之后在工作区头部“添加远程工作区”按钮或『设置 -> 远程主机聚合』里一键添加并持久化（`$DSH_HOME/remote-ssh-hosts.json`，重启自动恢复）。
    包需在 profile 的 `node_modules` 下可解析（本地用 Junction 指向包目录）。
 
 > 警告：客户端条目激活失败会让桌面执行 profile 恢复并**清空整个用户 patch 层**（含 `ui-theme`、`llm-pi-ai` 等手写行）。改 `client.js` 后先跑 `smoke-client-bundle.mjs`。详见 [`.agents/notes/implemented/architecture/2026-09-30-desktop-profile-integration.md`](.agents/notes/implemented/architecture/2026-09-30-desktop-profile-integration.md)。

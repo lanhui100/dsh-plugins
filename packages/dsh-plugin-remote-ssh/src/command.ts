@@ -82,9 +82,12 @@ export function registerRemoteSshCommand(
         const allHosts = manager.getHostNames()
 
         if (readyCallers.length === 0) {
+          const hostList = allHosts.length > 0
+            ? allHosts.join(', ')
+            : '无（请通过工作区头部“添加远程工作区”按钮或客户端设置页面添加）'
           return {
             kind: 'error',
-            text: `远程隧道尚在建立中 (已配置主机: ${allHosts.join(', ')})。请稍后重试，或前往客户端『设置』页面添加新主机。`,
+            text: `远程隧道尚在建立中 (已配置主机: ${hostList})。请稍后重试，或前往客户端『设置』页面添加新主机。`,
           }
         }
 

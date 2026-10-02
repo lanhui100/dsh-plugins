@@ -371,7 +371,13 @@ export function registerRemoteSshRoute(
           }
 
           const result = await manager.addHost(matched.host, remotePort)
-          sendJson(res, 200, { ok: true, host: result.host, localPort: result.localPort })
+          sendJson(res, 200, {
+            ok: true,
+            host: result.host,
+            localPort: result.localPort,
+            autoStarted: Boolean(result.autoStarted),
+            ...(result.harnessPath !== undefined ? { harnessPath: result.harnessPath } : {}),
+          })
         } catch (err) {
           sendJson(res, 500, {
             error: 'add-failed',

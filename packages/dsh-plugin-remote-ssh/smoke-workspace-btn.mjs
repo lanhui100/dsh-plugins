@@ -65,6 +65,33 @@ class MiniElement {
     this._textContent = String(val)
   }
 
+  // Minimal innerHTML: parses a single <svg> child so icon-only assertions can
+  // check the rendered structure instead of passing vacuously on empty text.
+  set innerHTML(html) {
+    this.children = []
+    this._textContent = ''
+    if (typeof html === 'string' && html.includes('<svg')) {
+      const svg = new MiniElement('svg')
+      const attrRe = /([a-zA-Z-]+)="([^"]*)"/g
+      let m
+      while ((m = attrRe.exec(html)) !== null) svg.setAttribute(m[1], m[2])
+      this.children.push(svg)
+    }
+  }
+
+  get isConnected() {
+    return this.parentElement !== null
+  }
+
+  removeChild(child) {
+    const idx = this.children.indexOf(child)
+    if (idx !== -1) {
+      this.children.splice(idx, 1)
+      child.parentElement = null
+    }
+    return child
+  }
+
   setAttribute(name, val) {
     this.attributes.set(name, String(val))
     if (name === 'class') this.className = String(val)
@@ -228,12 +255,16 @@ let registration = null
 globalThis.window = {
   document: doc,
   MutationObserver: globalThis.MutationObserver,
+  innerWidth: 1280,
+  innerHeight: 800,
   __ModuleLoader__: {
     load: (entry) => { registration = entry },
   },
 }
 
 const postedAddRequests = []
+/** Deferred resolver for the in-flight POST /remote-ssh/add-host request. */
+let addHostResolve = null
 globalThis.fetch = async (url, options) => {
   const method = options?.method || 'GET'
   if (url === '/remote-ssh/available-hosts') {
@@ -264,11 +295,15 @@ globalThis.fetch = async (url, options) => {
   if (url === '/remote-ssh/add-host' && method === 'POST') {
     const body = options?.body ? JSON.parse(options.body) : {}
     postedAddRequests.push(body)
-    return {
-      ok: true,
-      status: 200,
-      json: async () => ({ ok: true, host: body.host, localPort: 39388, autoStarted: true }),
-    }
+    // Keep the request pending until the test resolves it, so the loading
+    // state can be asserted mid-flight.
+    return new Promise((resolve) => {
+      addHostResolve = () => resolve({
+        ok: true,
+        status: 200,
+        json: async () => ({ ok: true, host: body.host, localPort: 39388, autoStarted: true }),
+      })
+    })
   }
   return { ok: true, status: 200, json: async () => ({}) }
 }
@@ -379,6 +414,17 @@ const addRemoteBtnIndex = sectionHeader.children.indexOf(addRemoteBtn)
 assert.ok(addRemoteBtnIndex !== -1, 'Add Remote button must be in sectionHeader')
 assert.ok(addRemoteBtnIndex < searchSlotIndex, 'Add Remote button must be positioned before searchSlot')
 
+// 2b. Assert the button uses the official-style tooltip, not the native title
+assert.equal(addRemoteBtn.getAttribute('title'), null, 'Add Remote button must not use a native title attribute')
+assert.equal(addRemoteBtn.title, undefined, 'Add Remote button must not use a native title property')
+assert.ok(addRemoteBtn.getAttribute('aria-label'), 'Add Remote button must keep an aria-label')
+assert.equal(addRemoteBtn.getAttribute('aria-label'), '添加远程工作区')
+
+// 2c. Regression guard: reposition must tolerate a real-browser HTMLCollection
+// (element.children has no Array methods). Pinning the Array.from fix so a
+// future re-introduction of Array.isArray fails this smoke loudly.
+assert.ok(source.includes('Array.from(header.children)'), 'reposition must convert header.children with Array.from (HTMLCollection-safe)')
+
 // 3. Click the button to open Popover
 addRemoteBtn.click()
 
@@ -392,15 +438,65 @@ const hostItem = popover.querySelector('.dsh-remote-popover-item')
 assert.ok(hostItem, 'Popover should render host items from available hosts')
 assert.ok(hostItem.textContent.includes('preprod'), 'Host item should include preprod')
 
-// 5. Click the connect/add button for preprod
+// 4b. Assert the per-host add control is a minimal icon-only button
 const connectBtn = hostItem.querySelector('.dsh-remote-popover-item-btn') || hostItem
+assert.ok(connectBtn, 'Host item must expose an icon-only add button')
+assert.equal(connectBtn.textContent, '', 'Add button must be icon-only (no visible text)')
+assert.ok(connectBtn.querySelector('svg'), 'Icon-only add button must render the plus icon')
+assert.ok(connectBtn.getAttribute('aria-label'), 'Icon-only add button must keep an accessible label')
+assert.ok(connectBtn.getAttribute('aria-label').includes('preprod'), 'Icon-only add button label must name the host')
+
+// 5. Click the connect/add button for preprod; assert loading state mid-flight
 connectBtn.click()
+
+await new Promise((resolve) => setTimeout(resolve, 20))
+
+assert.equal(postedAddRequests.length, 1, 'POST /remote-ssh/add-host must be dispatched')
+assert.equal(postedAddRequests[0].host, 'preprod')
+assert.equal(connectBtn.disabled, true, 'Add button must be disabled while connecting')
+assert.equal(connectBtn.getAttribute('aria-busy'), 'true', 'Add button must announce busy state while connecting')
+assert.ok(connectBtn.querySelector('.dsh-remote-spinner'), 'Add button must show a spinner while connecting')
+
+// 6. Resolve the in-flight add-host request; assert success toast
+assert.ok(addHostResolve, 'add-host request must be pending for the test to resolve')
+addHostResolve()
 
 await new Promise((resolve) => setTimeout(resolve, 50))
 
-// 6. Assert POST /remote-ssh/add-host was dispatched
-assert.equal(postedAddRequests.length, 1)
-assert.equal(postedAddRequests[0].host, 'preprod')
+const toast = doc.querySelector('.dsh-remote-toast')
+assert.ok(toast, 'Official-style toast must be rendered on connection success')
+assert.equal(toast.getAttribute('role'), 'alert', 'Toast must carry role="alert"')
+assert.ok(toast.textContent.includes('preprod'), 'Toast must name the connected host')
+assert.ok(toast.textContent.includes('启动 dsh 服务'), 'Toast must note the remote dsh service was auto-started')
+assert.ok(toast.querySelector('.dsh-remote-toast-icon--success'), 'Toast must render the success check-circle icon')
+
+// 6b. After success the button must stay disabled until the popover closes,
+//     the spinner must be gone and the plus icon restored.
+assert.equal(connectBtn.disabled, true, 'Add button must stay disabled until the popover closes')
+assert.equal(connectBtn.querySelector('.dsh-remote-spinner'), null, 'Spinner must be removed after success')
+assert.ok(connectBtn.querySelector('svg'), 'Plus icon must be restored after success')
+
+// 7. Tooltip behavior: official-style bubble on hover, ghost-free when the
+//    anchor is removed during the 500ms delay.
+addRemoteBtn.dispatchEvent({ type: 'mouseenter', target: addRemoteBtn, stopPropagation() {} })
+await new Promise((resolve) => setTimeout(resolve, 560))
+const tooltip = doc.querySelector('.dsh-remote-tooltip')
+assert.ok(tooltip, 'Official-style tooltip bubble must appear after the hover delay')
+assert.equal(tooltip.getAttribute('role'), 'tooltip', 'Tooltip must carry role="tooltip"')
+assert.ok(tooltip.textContent.includes('添加远程工作区'), 'Tooltip must show the button label')
+addRemoteBtn.dispatchEvent({ type: 'mouseleave', target: addRemoteBtn, stopPropagation() {} })
+assert.equal(doc.querySelector('.dsh-remote-tooltip'), null, 'Tooltip must withdraw on mouse leave')
+
+// 7b. Ghost-bubble guard: if the anchor is detached while the delay is pending,
+//     no bubble may be appended to document.body.
+addRemoteBtn.dispatchEvent({ type: 'mouseenter', target: addRemoteBtn, stopPropagation() {} })
+addRemoteBtn.remove()
+await new Promise((resolve) => setTimeout(resolve, 560))
+assert.equal(doc.querySelector('.dsh-remote-tooltip'), null, 'No tooltip bubble may be rendered for a detached anchor')
+// Re-create the button so teardown can find it.
+for (const listener of mutationListeners) {
+  listener()
+}
 
 console.log('all smoke-workspace-btn assertions passed cleanly!')
 

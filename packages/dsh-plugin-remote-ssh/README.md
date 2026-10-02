@@ -6,9 +6,11 @@
 
 | 键 | 含义 | 默认 |
 |---|---|---|
-| `host` | OpenSSH 主机别名（含用户/密钥/known-hosts 配置） | 必填 |
+| `host` | OpenSSH 主机别名（含用户/密钥/known-hosts 配置）。**可选**：省略时不做任何主机预置，远程主机统一通过工作区头部按钮/设置面板的“添加远程主机”机制动态接入并持久化 | 无 |
 | `remotePort` | 隧道远端的 DSH web 端口 | `3080` |
 | `localPort` | 本地回环转发端口 | `39387` |
+
+> “不预置”仅指启动配置不再隐含主机；已通过 UI 添加并持久化到 `$DSH_HOME/remote-ssh-hosts.json` 的主机（含升级前静态 `dev` 遗留下来的条目）重启后仍会照常恢复连接。
 
 ## semantics
 
@@ -27,7 +29,8 @@
 - **实时事件与打字机流**：Host 端提供 `GET /remote-ssh/session-follow` SSE 路由，连接远端 `/api/remote.mux` WebSocket 订阅 `session/follow`，将远端推送的事件增量与 assistant 打字机流实时中继到官方会话面板。
 - **问答交互（`ask_user_question`）**：Host 端监听远端 WebSocket 的 `$events` 逻辑流，捕获模型发起的 `user-questions/request` 与取消事件，通过 `GET /remote-ssh/pending-interaction`、SSE 流实时分发以及 `POST /remote-ssh/interaction-respond` 提供应答通道；Client 端在 composer 输入区域就地挂载问答交互卡片（支持推荐徽标、单选/多选/自定义输入、跳过与提交），并接入 `uiSession.registerPendingInteraction` 驱动侧边栏待回答指示点，提交后调用远端 `$events/result` 解除工具挂起，形成双向交互闭环。
 - **多远程主机池化与配置页面下拉添加**：内置 `RemoteHostManager` 与本地 OpenSSH 配置解析器（`ssh-config.ts`），自动读取本机 `~/.ssh/config` 中已配置 `IdentityFile` 密钥认证的有效主机条目，排除通配符与已添加主机；在客户端『设置』面板中自动挂载『远程主机聚合 (Remote SSH)』卡片，通过下拉框展示未添加的密钥主机，点击即可一键建立隧道连接、持久化至 `$DSH_HOME/remote-ssh-hosts.json` 并即时刷新工作区；收口 `/remote-ssh` 命令行，输入带参指令将直接提示前往设置页面操作。
-- **工作区快捷添加与远端服务自动拉起**：在侧边栏工作区头部（`sectionHeader`）搜索图标前常驻“添加远程工作区”图标（服务器+加号），点击弹出浮层卡片，列出本机未添加的 SSH 密钥主机。执行添加时内置 `RemoteLauncher`，自动执行远端端口与服务状态探测：若远端已运行 `dsh web` 则直接建立隧道连接；若未运行，则自动在远端常见路径（`~`、`~/work`、`/data` 等）检索 `deepseek-harness` 目录或全局 `dsh` 二进制，并在后台以 `nohup dsh web --port 3080` 拉起服务，轮询等待就绪后完成隧道连接与工作区聚合，免除用户手动登机敲启动命令的繁琐流程。
+- **工作区快捷添加与远端服务自动拉起**：在侧边栏工作区头部（`sectionHeader`）搜索图标左侧常驻“添加远程工作区”图标按钮（与官方 `iconButton` 完全同尺寸同样式，右侧操作簇内垂直对齐，tooltip 采用官方同款暗色气泡——底部、500ms 延迟），点击弹出浮层卡片，列出本机未添加的 SSH 密钥主机，每台主机右侧为极简纯图标（＋）添加按钮。执行添加时按钮进入 loading 态（spinner），内置 `RemoteLauncher` 自动执行远端端口与服务状态探测：若远端已运行 `dsh web` 则直接建立隧道连接；若未运行，则自动在远端常见路径（`~`、`~/work`、`/data` 等）检索 `deepseek-harness` 目录或全局 `dsh` 二进制，并在后台以 `nohup dsh web --port 3080` 拉起服务，轮询等待就绪后完成隧道连接；成功后弹出官方样式全局 Toast（顶部居中、成功绿勾、自动淡出），文案含“主机 <host> 连接成功”并在自动拉起时追加“并已在远端自动启动 dsh 服务”，随后刷新工作区聚合。
+- **主机接入不硬编码**：`config.host` 可选；省略时 `RemoteHostManager` 启动为空，全部主机经上述添加机制动态接入并持久化到 `$DSH_HOME/remote-ssh-hosts.json`，重启自动恢复。
 - 刷新：远程快照 60s 轮询（`POLL_INTERVAL_MS`），离开时移除注入行并恢复被代理的方法。
 
 ## 产物与构建
@@ -45,14 +48,13 @@
 
 **装到 home 层**，不要装到 profile 层：桌面应用会按自己的设置库重写 `profiles/<name>/cordis.patch.yml`，手写行随时可能被抹掉；`$DSH_HOME/cordis.patch.yml` 是独立的用户层（组合顺序：bundle → profile → home → `--patch`），应用不写它。
 
-在 `$DSH_HOME/cordis.patch.yml` 写入（必须是 `- insert:`，写成顶层 `- id:` 会被静默跳过）：
+在 `$DSH_HOME/cordis.patch.yml` 写入（必须是 `- insert:`，写成顶层 `- id:` 会被静默跳过）。`host` 可省略——省略时启动不做主机预置，之后在工作区头部“添加远程工作区”按钮或『设置 -> 远程主机聚合』里一键添加并持久化：
 
 ```yaml
 - insert:
     - id: remote-ssh
       name: "dsh-plugin-remote-ssh"
       config:
-        host: "dev"
         remotePort: 3080
         localPort: 39387
 ```
@@ -61,7 +63,8 @@
 
 ## limitations
 
-- 仅支持通过 OpenSSH 密钥免密登录的主机配置（如 `~/.ssh/config` 中的 `Host dev`）。
+- 仅支持通过 OpenSSH 密钥免密登录的主机配置（如 `~/.ssh/config` 中带 `IdentityFile` 的 `Host` 块）；主机列表由该配置动态发现，无需在插件配置中预写主机别名。
+- 动态添加的主机持久化到 `$DSH_HOME/remote-ssh-hosts.json`；当前**没有移除主机的 UI**，误加的主机需手动编辑该文件（连接失败的新主机不会持久化，可直接重试）。
 - 远端主机需部署有 `deepseek-harness` 源码环境或安装有 `dsh`；若未启动，插件会在添加时自动探测并在后台启动 `dsh web`。
 - 远端会话图片读取（`attachment`）尚未接通（代理返回明确未接通错误）。
 - `/remote-ssh/*` 路由由本地 webserver 直接服务，**不经过 `/api` 的浏览器鉴权围栏**：本机任意进程可读该 JSON/SSE；若把 webserver 绑到非回环地址，网络侧同样可读（只读、默认回环绑定）。详见 `.agents/notes/implemented/architecture/2026-10-01-reuse-official-workspace-session-ui.md`。
