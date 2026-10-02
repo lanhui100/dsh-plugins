@@ -84,6 +84,10 @@ class CookieJar {
 export class RemoteCaller {
   private readonly jar = new CookieJar()
   private exchanging: Promise<void> | undefined
+  private eventsSocket?: WebSocket
+  private currentClientId?: string
+  private readonly pendingInteractions = new Map<string, RemotePendingInteraction>()
+  private readonly interactionListeners = new Set<(interaction: RemotePendingInteraction, action: 'request' | 'cancel') => void>()
 
   constructor(private readonly options: RemoteOptions) {}
 
@@ -101,6 +105,9 @@ export class RemoteCaller {
   async warmup(): Promise<void> {
     try {
       await this.ensureCookie()
+      void this.ensureEventsListener().catch((err) => {
+        console.warn('remote-ssh: events listener warmup notice:', err)
+      })
     } catch (error) {
       this.jar.clear()
       throw error
@@ -422,6 +429,7 @@ export class RemoteCaller {
 
     const onAbort = () => terminate(new Error('remote-ssh: follow stream aborted'))
     signal?.addEventListener('abort', onAbort, { once: true })
+    if (signal?.aborted) onAbort()
 
     try {
       while (true) {
@@ -440,6 +448,276 @@ export class RemoteCaller {
       terminate(null)
     }
   }
+
+  /**
+   * Ensure that the long-lived subscription to the remote `$events` stream is open.
+   * Discovers and maintains `currentClientId`, and captures incoming `waterfall` events
+   * like `user-questions/request` and `cancel`.
+   */
+  async ensureEventsListener(): Promise<void> {
+    const WS = (globalThis as unknown as { WebSocket: typeof WebSocket }).WebSocket
+    if (typeof WS !== 'function') return
+    if (this.eventsSocket && (this.eventsSocket.readyState === 0 || this.eventsSocket.readyState === 1)) {
+      return
+    }
+    await this.ensureCookie()
+    const cookie = this.jar.header()
+    const wsUrl = `${this.options.baseUrl.replace(/^http/, 'ws')}/api/remote.mux`
+
+    const streamId = `events-${Date.now().toString(36)}-${Math.floor(Math.random() * 0xffff).toString(16)}`
+    const socket = new WS(wsUrl, {
+      headers: cookie !== undefined ? { cookie } : {},
+    } as unknown as string[])
+    this.eventsSocket = socket
+
+    socket.onopen = () => {
+      try {
+        socket.send(JSON.stringify({
+          type: 'open',
+          streamId,
+          endpoint: '$events',
+          payload: { args: {} },
+        }))
+      } catch (err) {
+        console.warn('remote-ssh: failed to send open for $events stream:', err)
+      }
+    }
+
+    socket.onmessage = (event) => {
+      try {
+        const raw = typeof event.data === 'string' ? event.data : event.data?.toString()
+        if (!raw) return
+        const msg = JSON.parse(raw) as {
+          type?: string
+          streamId?: string
+          value?: any
+        }
+        if (msg.streamId !== streamId) return
+        if (msg.type === 'item') {
+          const val = msg.value
+          if (val?.type === 'ready') {
+            this.currentClientId = val.clientId
+          } else if (val?.type === 'waterfall' && val.event === 'user-questions/request') {
+            const rawReq = val.request || {}
+            const questions: RemoteInteractionQuestionItem[] = Array.isArray(rawReq.questions)
+              ? rawReq.questions
+              : []
+            const pending: RemotePendingInteraction = {
+              clientId: this.currentClientId ?? '',
+              eventId: String(val.eventId),
+              sessionId: String(val.agentId),
+              event: String(val.event),
+              questions,
+              rawRequest: rawReq,
+              createdAt: Date.now(),
+            }
+            this.pendingInteractions.set(pending.eventId, pending)
+            for (const listener of this.interactionListeners) {
+              try { listener(pending, 'request') } catch {}
+            }
+          } else if (val?.type === 'cancel') {
+            const eventId = String(val.eventId)
+            const pending = this.pendingInteractions.get(eventId)
+            if (pending) {
+              this.pendingInteractions.delete(eventId)
+              for (const listener of this.interactionListeners) {
+                try { listener(pending, 'cancel') } catch {}
+              }
+            }
+          }
+        }
+      } catch (err) {
+        console.warn('remote-ssh: $events parse error:', err)
+      }
+    }
+
+    socket.onclose = () => {
+      if (this.eventsSocket === socket) {
+        this.eventsSocket = undefined
+      }
+    }
+
+    socket.onerror = () => {
+      try { socket.close() } catch {}
+    }
+  }
+
+  getPendingInteractionsForSession(sessionId: string): RemotePendingInteraction[] {
+    const list: RemotePendingInteraction[] = []
+    for (const item of this.pendingInteractions.values()) {
+      if (item.sessionId === sessionId) list.push(item)
+    }
+    return list
+  }
+
+  getPendingInteraction(eventId: string): RemotePendingInteraction | undefined {
+    return this.pendingInteractions.get(eventId)
+  }
+
+  getAllPendingInteractions(): RemotePendingInteraction[] {
+    return [...this.pendingInteractions.values()]
+  }
+
+  onInteraction(listener: (interaction: RemotePendingInteraction, action: 'request' | 'cancel') => void): () => void {
+    this.interactionListeners.add(listener)
+    return () => { this.interactionListeners.delete(listener) }
+  }
+
+  recordMockInteraction(interaction: RemotePendingInteraction): void {
+    this.pendingInteractions.set(interaction.eventId, interaction)
+    for (const listener of this.interactionListeners) {
+      try { listener(interaction, 'request') } catch {}
+    }
+  }
+
+  removeMockInteraction(eventId: string): void {
+    const pending = this.pendingInteractions.get(eventId)
+    if (pending) {
+      this.pendingInteractions.delete(eventId)
+      for (const listener of this.interactionListeners) {
+        try { listener(pending, 'cancel') } catch {}
+      }
+    }
+  }
+
+  async respondRemoteEvent(
+    clientId: string,
+    eventId: string,
+    outcome:
+      | { kind: 'result'; value?: unknown }
+      | { kind: 'rejected'; error: { name: string; message: string; code?: string } }
+      | { kind: 'next' },
+  ): Promise<unknown> {
+    const effectiveClientId = clientId || this.pendingInteractions.get(eventId)?.clientId || this.currentClientId || ''
+    let result: unknown = { accepted: true }
+    if (!effectiveClientId.startsWith('mock-')) {
+      result = await this.invoke<unknown>('$events/result', {
+        clientId: effectiveClientId,
+        eventId,
+        outcome,
+      })
+    }
+    const pending = this.pendingInteractions.get(eventId)
+    if (pending) {
+      this.pendingInteractions.delete(eventId)
+      for (const listener of this.interactionListeners) {
+        try { listener(pending, 'cancel') } catch {}
+      }
+    }
+    return result
+  }
+
+  dispose(): void {
+    if (this.eventsSocket) {
+      try { this.eventsSocket.close() } catch {}
+      this.eventsSocket = undefined
+    }
+    this.pendingInteractions.clear()
+    this.interactionListeners.clear()
+  }
+
+  async archiveRemoteSession(
+    sessionId: string,
+    options: { readonly stopActivity?: boolean } = {},
+    signal?: AbortSignal,
+  ): Promise<{ readonly archivedSessionIds: readonly string[] }> {
+    const result = await this.invoke<{ readonly archivedSessionIds: readonly string[] }>(
+      'workspace/archiveSession',
+      {
+        request: {
+          sessionId,
+          ...(options.stopActivity === true ? { stopActivity: true } : {}),
+        },
+      },
+      signal,
+    )
+    if (this.cachedBaseline) {
+      this.cachedBaseline = undefined
+    }
+    return result
+  }
+
+  async unarchiveRemoteSession(
+    sessionId: string,
+    signal?: AbortSignal,
+  ): Promise<{ readonly archivedSessionIds: readonly string[] }> {
+    const result = await this.invoke<{ readonly archivedSessionIds: readonly string[] }>(
+      'workspace/unarchiveSession',
+      { request: { sessionId } },
+      signal,
+    )
+    if (this.cachedBaseline) {
+      this.cachedBaseline = undefined
+    }
+    return result
+  }
+
+  async pinRemoteSession(
+    sessionId: string,
+    signal?: AbortSignal,
+  ): Promise<{ readonly pinnedSessionIds: readonly string[] }> {
+    const result = await this.invoke<{ readonly pinnedSessionIds: readonly string[] }>(
+      'workspace/pinSession',
+      { request: { sessionId } },
+      signal,
+    )
+    if (this.cachedBaseline) {
+      this.cachedBaseline = undefined
+    }
+    return result
+  }
+
+  async unpinRemoteSession(
+    sessionId: string,
+    signal?: AbortSignal,
+  ): Promise<{ readonly pinnedSessionIds: readonly string[] }> {
+    const result = await this.invoke<{ readonly pinnedSessionIds: readonly string[] }>(
+      'workspace/unpinSession',
+      { request: { sessionId } },
+      signal,
+    )
+    if (this.cachedBaseline) {
+      this.cachedBaseline = undefined
+    }
+    return result
+  }
+
+  async renameRemoteSession(
+    sessionId: string,
+    title: string,
+    signal?: AbortSignal,
+  ): Promise<{ readonly title: string; readonly seq: number }> {
+    return await this.invoke<{ readonly title: string; readonly seq: number }>(
+      'session/rename',
+      { request: { sessionId, title } },
+      signal,
+    )
+  }
+}
+
+export interface RemoteInteractionQuestionOption {
+  readonly label: string
+  readonly description?: string
+}
+
+export interface RemoteInteractionQuestionItem {
+  readonly id: string
+  readonly question: string
+  readonly detail?: string
+  readonly header?: string
+  readonly options?: readonly RemoteInteractionQuestionOption[]
+  readonly multiSelect?: boolean
+  readonly intent?: { readonly kind: string; readonly approve?: string; readonly callId?: string }
+}
+
+export interface RemotePendingInteraction {
+  readonly clientId: string
+  readonly eventId: string
+  readonly sessionId: string
+  readonly event: string
+  readonly questions: readonly RemoteInteractionQuestionItem[]
+  readonly rawRequest?: Record<string, unknown>
+  readonly createdAt: number
 }
 
 export interface RemoteWorkspaceBaselineItem {

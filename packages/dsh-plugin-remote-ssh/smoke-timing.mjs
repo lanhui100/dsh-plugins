@@ -18,3 +18,5 @@ const t1 = Date.now()
 const items = await listRemoteSessions(caller, AbortSignal.timeout(30_000))
 console.log(`listRemoteSessions in ${Date.now() - t1} ms -> ${items.length} sessions`)
 console.log(`sample: ${items[0]?.sessionId} ${items[0]?.title ?? ''} (${items[0]?.cwd})`)
+caller.dispose()
+

@@ -11,7 +11,11 @@ const tunnel = new SshTunnel({ host, remotePort, localPort })
 const registrations = []
 const ctx = new Context()
 ctx.commands = { register: (definition) => { registrations.push(definition); return () => {} } }
-registerRemoteSshCommand(ctx, () => new RemoteCaller({ host, baseUrl: tunnel.baseUrl() }))
+let activeCaller
+registerRemoteSshCommand(ctx, () => {
+  activeCaller = new RemoteCaller({ host, baseUrl: tunnel.baseUrl() })
+  return activeCaller
+})
 try {
   await tunnel.start()
   const handler = registrations[0].handler
@@ -19,5 +23,6 @@ try {
   console.log(`kind=${value.kind}`)
   console.log(String(value.text).split('\n').slice(0, 6).join('\n'))
 } finally {
+  activeCaller?.dispose()
   await tunnel.dispose()
 }

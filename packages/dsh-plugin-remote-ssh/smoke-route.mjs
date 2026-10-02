@@ -15,6 +15,13 @@ import {
   SESSION_CANCEL_ROUTE,
   SESSION_FOLLOW_ROUTE,
   SESSION_CREATE_ROUTE,
+  SESSION_PENDING_INTERACTION_ROUTE,
+  SESSION_INTERACTION_RESPOND_ROUTE,
+  SESSION_ARCHIVE_ROUTE,
+  SESSION_UNARCHIVE_ROUTE,
+  SESSION_PIN_ROUTE,
+  SESSION_UNPIN_ROUTE,
+  SESSION_RENAME_ROUTE,
 } from './lib/index.js'
 
 const baseUrl = process.env.REMOTE_SSH_BASE_URL ?? 'http://127.0.0.1:39387'
@@ -167,4 +174,200 @@ if (sampleWs?.cwd) {
   if (typeof createJson.ok !== 'boolean') throw new Error('create route must return ok boolean')
   if (createJson.ok && !createJson.value?.sessionId) throw new Error('create route must return sessionId on success')
 }
+
+// 8. Test pending-interaction route & interaction response route
+const pendingRoute = routes.get(SESSION_PENDING_INTERACTION_ROUTE)
+if (!pendingRoute) throw new Error(`missing route: ${SESSION_PENDING_INTERACTION_ROUTE}`)
+const respondRoute = routes.get(SESSION_INTERACTION_RESPOND_ROUTE)
+if (!respondRoute) throw new Error(`missing route: ${SESSION_INTERACTION_RESPOND_ROUTE}`)
+
+if (sampleSession?.sessionId) {
+  // 8a. No interaction initially
+  captured = { status: 0, body: '' }
+  await pendingRoute.handler({ url: `${SESSION_PENDING_INTERACTION_ROUTE}?sessionId=${sampleSession.sessionId}` }, res)
+  console.log(`pending interaction status: ${captured.status} body: ${captured.body}`)
+  let pendingJson = JSON.parse(captured.body)
+  if (!pendingJson.ok || pendingJson.value?.pending !== null) {
+    throw new Error('expected no pending interaction initially')
+  }
+
+  // 8b. Record mock interaction on caller
+  const mockEventId = `evt-smoke-${Date.now()}`
+  caller.recordMockInteraction({
+    clientId: 'mock-client-1',
+    eventId: mockEventId,
+    sessionId: sampleSession.sessionId,
+    event: 'user-questions/request',
+    questions: [
+      {
+        id: 'q1',
+        question: 'Choose deployment target',
+        options: [{ label: 'Cloud' }, { label: 'Local' }],
+        multiSelect: false,
+      },
+    ],
+    createdAt: Date.now(),
+  })
+
+  // 8c. Query pending interaction again
+  captured = { status: 0, body: '' }
+  await pendingRoute.handler({ url: `${SESSION_PENDING_INTERACTION_ROUTE}?sessionId=${sampleSession.sessionId}` }, res)
+  pendingJson = JSON.parse(captured.body)
+  console.log(`pending interaction with mock: ${captured.status} question: "${pendingJson.value?.pending?.questions?.[0]?.question}"`)
+  if (!pendingJson.ok || pendingJson.value?.pending?.eventId !== mockEventId) {
+    throw new Error('expected pending interaction to match mockEventId')
+  }
+
+  // 8d. Follow SSE route should emit interaction/request frame
+  let receivedInteractionFrame = false
+  let closeFollow2 = null
+  const mockFollowRes2 = {
+    writeHead() {},
+    write(chunk) {
+      if (typeof chunk === 'string' && chunk.includes('interaction/request')) {
+        receivedInteractionFrame = true
+      }
+      if (closeFollow2) closeFollow2()
+      return true
+    },
+    end() {},
+  }
+  const mockFollowReq2 = {
+    url: `${SESSION_FOLLOW_ROUTE}?id=${sampleSession.sessionId}`,
+    on(ev, cb) { if (ev === 'close') closeFollow2 = cb },
+  }
+  await followRoute.handler(mockFollowReq2, mockFollowRes2)
+  console.log(`follow route emitted interaction/request: ${receivedInteractionFrame}`)
+  if (!receivedInteractionFrame) {
+    throw new Error('expected follow route to emit interaction/request frame')
+  }
+
+  // 8e. Test respond route
+  captured = { status: 0, body: '' }
+  const mockRespondReq = {
+    on(ev, cb) {
+      if (ev === 'data') cb(Buffer.from(JSON.stringify({
+        sessionId: sampleSession.sessionId,
+        eventId: mockEventId,
+        outcome: {
+          kind: 'result',
+          value: { answers: [{ id: 'q1', selected: ['Cloud'] }] },
+        },
+      })))
+      if (ev === 'end') cb()
+    },
+  }
+  await respondRoute.handler(mockRespondReq, res)
+  console.log(`respond route status: ${captured.status} body: ${captured.body}`)
+  const respondJson = JSON.parse(captured.body)
+  if (typeof respondJson.ok !== 'boolean') throw new Error('respond route must return ok boolean')
+
+  // 8f. Query pending interaction again - should be cleared
+  captured = { status: 0, body: '' }
+  await pendingRoute.handler({ url: `${SESSION_PENDING_INTERACTION_ROUTE}?sessionId=${sampleSession.sessionId}` }, res)
+  pendingJson = JSON.parse(captured.body)
+  if (!pendingJson.ok || pendingJson.value?.pending !== null) {
+    throw new Error('expected pending interaction to be cleared after respond')
+  }
+  console.log('pending interaction lifecycle verified successfully in smoke-route')
+}
+
+// 9. Session Operations: Archive, Unarchive, Pin, Unpin, Rename
+const archiveRoute = routes.get(SESSION_ARCHIVE_ROUTE)
+const unarchiveRoute = routes.get(SESSION_UNARCHIVE_ROUTE)
+const pinRoute = routes.get(SESSION_PIN_ROUTE)
+const unpinRoute = routes.get(SESSION_UNPIN_ROUTE)
+const renameRoute = routes.get(SESSION_RENAME_ROUTE)
+
+if (!archiveRoute || !unarchiveRoute || !pinRoute || !unpinRoute || !renameRoute) {
+  throw new Error('missing session operation route registrations')
+}
+
+if (sampleSession) {
+  // 9a. Test Archive & Unarchive
+  captured = { status: 0, body: '' }
+  const mockArchiveReq = {
+    on(ev, cb) {
+      if (ev === 'data') cb(Buffer.from(JSON.stringify({ sessionId: sampleSession.sessionId })))
+      if (ev === 'end') cb()
+    },
+  }
+  await archiveRoute.handler(mockArchiveReq, res)
+  console.log(`archive route status: ${captured.status} body: ${captured.body}`)
+  const archiveJson = JSON.parse(captured.body)
+  if (!archiveJson.ok || !Array.isArray(archiveJson.value?.archivedSessionIds)) {
+    throw new Error('archive route must return ok and archivedSessionIds array')
+  }
+
+  captured = { status: 0, body: '' }
+  const mockUnarchiveReq = {
+    on(ev, cb) {
+      if (ev === 'data') cb(Buffer.from(JSON.stringify({ sessionId: sampleSession.sessionId })))
+      if (ev === 'end') cb()
+    },
+  }
+  await unarchiveRoute.handler(mockUnarchiveReq, res)
+  console.log(`unarchive route status: ${captured.status} body: ${captured.body}`)
+  const unarchiveJson = JSON.parse(captured.body)
+  if (!unarchiveJson.ok || !Array.isArray(unarchiveJson.value?.archivedSessionIds)) {
+    throw new Error('unarchive route must return ok and archivedSessionIds array')
+  }
+
+  // 9b. Test Pin & Unpin
+  captured = { status: 0, body: '' }
+  const mockPinReq = {
+    on(ev, cb) {
+      if (ev === 'data') cb(Buffer.from(JSON.stringify({ sessionId: sampleSession.sessionId })))
+      if (ev === 'end') cb()
+    },
+  }
+  await pinRoute.handler(mockPinReq, res)
+  console.log(`pin route status: ${captured.status} body: ${captured.body}`)
+  const pinJson = JSON.parse(captured.body)
+  if (!pinJson.ok || !Array.isArray(pinJson.value?.pinnedSessionIds)) {
+    throw new Error('pin route must return ok and pinnedSessionIds array')
+  }
+
+  captured = { status: 0, body: '' }
+  const mockUnpinReq = {
+    on(ev, cb) {
+      if (ev === 'data') cb(Buffer.from(JSON.stringify({ sessionId: sampleSession.sessionId })))
+      if (ev === 'end') cb()
+    },
+  }
+  await unpinRoute.handler(mockUnpinReq, res)
+  console.log(`unpin route status: ${captured.status} body: ${captured.body}`)
+  const unpinJson = JSON.parse(captured.body)
+  if (!unpinJson.ok || !Array.isArray(unpinJson.value?.pinnedSessionIds)) {
+    throw new Error('unpin route must return ok and pinnedSessionIds array')
+  }
+
+  // 9c. Test Rename
+  captured = { status: 0, body: '' }
+  const origTitle = sampleSession.title || 'untitled'
+  const mockRenameReq = {
+    on(ev, cb) {
+      if (ev === 'data') cb(Buffer.from(JSON.stringify({ sessionId: sampleSession.sessionId, title: `${origTitle} (test)` })))
+      if (ev === 'end') cb()
+    },
+  }
+  await renameRoute.handler(mockRenameReq, res)
+  console.log(`rename route status: ${captured.status} body: ${captured.body}`)
+  const renameJson = JSON.parse(captured.body)
+  if (!renameJson.ok || typeof renameJson.value?.title !== 'string') {
+    throw new Error('rename route must return ok and title')
+  }
+
+  // Restore original title
+  const mockRestoreReq = {
+    on(ev, cb) {
+      if (ev === 'data') cb(Buffer.from(JSON.stringify({ sessionId: sampleSession.sessionId, title: origTitle })))
+      if (ev === 'end') cb()
+    },
+  }
+  await renameRoute.handler(mockRestoreReq, res)
+}
+
+caller.dispose()
+console.log('all smoke-route assertions passed cleanly')
 

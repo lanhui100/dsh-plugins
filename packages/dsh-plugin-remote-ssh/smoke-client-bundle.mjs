@@ -99,12 +99,96 @@ globalThis.fetch = async (url) => {
       json: async () => ({ ok: true, value: { sessionId: 'session-remote-new-1', agentPreset: 'standard' } }),
     }
   }
+  if (urlStr.includes('/remote-ssh/pending-interaction')) {
+    return {
+      ok: true,
+      status: 200,
+      json: async () => ({
+        ok: true,
+        value: {
+          sessionId: 'session-demo-1',
+          pending: {
+            eventId: 'evt-client-smoke-1',
+            sessionId: 'session-demo-1',
+            questions: [
+              {
+                id: 'q1',
+                question: 'Choose framework',
+                options: [{ label: 'React (recommended)' }, { label: 'Vue' }],
+                multiSelect: false,
+              },
+            ],
+          },
+        },
+      }),
+    }
+  }
+  if (urlStr.includes('/remote-ssh/interaction-respond')) {
+    return {
+      ok: true,
+      status: 200,
+      json: async () => ({ ok: true, value: { accepted: true } }),
+    }
+  }
+  if (urlStr.includes('/remote-ssh/session-archive')) {
+    return {
+      ok: true,
+      status: 200,
+      json: async () => ({ ok: true, value: { archivedSessionIds: ['session-demo-1', 'session-demo-2'] } }),
+    }
+  }
+  if (urlStr.includes('/remote-ssh/session-unarchive')) {
+    return {
+      ok: true,
+      status: 200,
+      json: async () => ({ ok: true, value: { archivedSessionIds: ['session-demo-2'] } }),
+    }
+  }
+  if (urlStr.includes('/remote-ssh/session-pin')) {
+    return {
+      ok: true,
+      status: 200,
+      json: async () => ({ ok: true, value: { pinnedSessionIds: ['session-demo-1'] } }),
+    }
+  }
+  if (urlStr.includes('/remote-ssh/session-unpin')) {
+    return {
+      ok: true,
+      status: 200,
+      json: async () => ({ ok: true, value: { pinnedSessionIds: [] } }),
+    }
+  }
+  if (urlStr.includes('/remote-ssh/session-rename')) {
+    return {
+      ok: true,
+      status: 200,
+      json: async () => ({ ok: true, value: { title: 'Renamed Title', seq: 5 } }),
+    }
+  }
   if (urlStr.includes('/remote-ssh/session-follow')) {
     const sseFrames = [
       JSON.stringify({ type: 'snapshot', cursor: 42, records: [{ seq: 1 }] }),
       JSON.stringify({ type: 'event', event: { type: 'turn/start', seq: 2, time: 1700000000002 } }),
       JSON.stringify({ type: 'assistant-stream', frame: { revision: 1 } }),
+      JSON.stringify({
+        type: 'interaction/request',
+        eventId: 'evt-client-smoke-1',
+        sessionId: 'session-demo-1',
+        questions: [
+          {
+            id: 'q1',
+            question: 'Choose framework',
+            options: [{ label: 'React (recommended)' }, { label: 'Vue' }],
+            multiSelect: false,
+          },
+        ],
+      }),
       JSON.stringify({ type: 'event', event: { type: 'turn/end', seq: 3, time: 1700000000003 } }),
+      JSON.stringify({
+        type: 'interaction/cancel',
+        eventId: 'evt-client-smoke-1',
+        sessionId: 'session-demo-1',
+      }),
     ]
     const sseText = sseFrames.map((f) => `data: ${f}\n\n`).join('')
     const encoder = new TextEncoder()
@@ -154,8 +238,10 @@ console.log(`exports.inject: ${JSON.stringify(clientExports.inject)}`)
 
 // Contract assert: must declare all consumed services, including the namespace associate.
 assert.ok(
-  Array.isArray(clientExports.inject) && clientExports.inject.includes('remote.session'),
-  'clientExports.inject must declare "remote.session" so Cordis context proxy permits ctx.remote.session access',
+  Array.isArray(clientExports.inject) &&
+    clientExports.inject.includes('remote.session') &&
+    clientExports.inject.includes('remote.workspace'),
+  'clientExports.inject must declare "remote.session" and "remote.workspace" so Cordis context proxy permits access',
 )
 
 // Build a real Cordis Context environment to guarantee no missing-inject runtime failures.
@@ -165,6 +251,22 @@ const addedSessions = []
 const removedSessions = []
 const sessionStatusUpdates = []
 const sessionActivityUpdates = []
+const registeredInteractions = []
+const unregisteredInteractions = []
+
+class UiSessionService extends Service {
+  constructor(ctx) {
+    super(ctx, 'uiSession')
+  }
+  registerPendingInteraction(fn) {
+    return (pending, handler) => {
+      registeredInteractions.push(pending)
+      return () => {
+        unregisteredInteractions.push(pending)
+      }
+    }
+  }
+}
 
 class RemoteService extends Service {
   static [Service.tracker] = { associate: 'remote' }
@@ -186,16 +288,31 @@ class RemoteSessionService extends Service {
   }
 }
 
+class RemoteWorkspaceService extends Service {
+  constructor(ctx) {
+    super(ctx, 'remote.workspace')
+    for (const method of ['archiveSession', 'unarchiveSession', 'pinSession', 'unpinSession']) {
+      Object.defineProperty(this, method, {
+        configurable: true,
+        enumerable: true,
+        get: () => (...args) => ({ ok: true, value: { method, args } }),
+      })
+    }
+  }
+}
+
 class WorkspacesService extends Service {
   constructor(ctx) {
     super(ctx, 'workspaces')
     this.list = {
       items: [],
       archivedSessionIds: [],
+      pinnedSessionIds: [],
       removedIds: new Set(),
       replaceBaseline(baseline) {
         this.items = [...(baseline.items || [])]
         this.archivedSessionIds = [...(baseline.archivedSessionIds || [])]
+        this.pinnedSessionIds = [...(baseline.pinnedSessionIds || [])]
       },
       replaceArchived(ids) {
         this.archivedSessionIds = [...ids]
@@ -241,8 +358,10 @@ class SessionsService extends Service {
 const root = new Context()
 root.plugin(RemoteService)
 root.plugin(RemoteSessionService)
+root.plugin(RemoteWorkspaceService)
 root.plugin(WorkspacesService)
 root.plugin(SessionsService)
+root.plugin(UiSessionService)
 
 const fork = root.plugin({
   name: registration.id,
@@ -430,8 +549,75 @@ assert.ok(
   'Follow stream must trigger handleSessionActivity(id, time) on turn/end',
 )
 
+// 4. Pending interaction registration & cancellation via uiSession
+assert.ok(
+  registeredInteractions.some(
+    (it) => it.key === 'evt-client-smoke-1' && it.kind === 'question' && it.sessionId === 'session-demo-1',
+  ),
+  'Follow stream interaction/request must call uiSession.registerPendingInteraction',
+)
+assert.ok(
+  unregisteredInteractions.some(
+    (it) => it.key === 'evt-client-smoke-1' && it.kind === 'question' && it.sessionId === 'session-demo-1',
+  ),
+  'Follow stream interaction/cancel must unregister pending interaction',
+)
+
+// Session actions: rename
+// Remote branch: rename forwards to /remote-ssh/session-rename
+const renameRes = await pluginCtx.remote.session.rename({ sessionId: 'session-demo-1', title: 'Renamed Title' })
+assert.ok(renameRes.ok, 'Remote rename request must succeed')
+assert.equal(renameRes.value?.title, 'Renamed Title', 'Remote rename must return new title')
+assert.ok(requestedUrls.some((u) => u.includes('/remote-ssh/session-rename')), 'Rename must hit /remote-ssh/session-rename')
+
+// Local branch: rename passes through
+const localRename = await pluginCtx.remote.session.rename({ sessionId: 'session-local-x', title: 'Local Title' })
+assert.equal(localRename.value?.method, 'rename', 'Local rename must pass through')
+
+// Workspace actions: archiveSession & unarchiveSession
+// Remote branch: archiveSession forwards to /remote-ssh/session-archive and updates wsList
+const archiveRes = await pluginCtx.remote.workspace.archiveSession({ sessionId: 'session-demo-1' })
+assert.ok(archiveRes.ok, 'Remote archive request must succeed')
+assert.ok(archiveRes.value?.archivedSessionIds?.includes('session-demo-1'), 'Remote archive must return merged archivedSessionIds')
+assert.ok(requestedUrls.some((u) => u.includes('/remote-ssh/session-archive')), 'Archive must hit /remote-ssh/session-archive')
+assert.ok(wsList.archivedSessionIds.includes('session-demo-1'), 'Merged archivedSessionIds must be synced to wsList')
+
+// Remote branch: unarchiveSession forwards to /remote-ssh/session-unarchive and updates wsList
+const unarchiveRes = await pluginCtx.remote.workspace.unarchiveSession({ sessionId: 'session-demo-1' })
+assert.ok(unarchiveRes.ok, 'Remote unarchive request must succeed')
+assert.ok(!unarchiveRes.value?.archivedSessionIds?.includes('session-demo-1'), 'Remote unarchive must remove session-demo-1')
+assert.ok(requestedUrls.some((u) => u.includes('/remote-ssh/session-unarchive')), 'Unarchive must hit /remote-ssh/session-unarchive')
+assert.ok(!wsList.archivedSessionIds.includes('session-demo-1'), 'Unarchived session must be removed from wsList')
+
+// Local branch: workspace archive/unarchive passes through
+const localArchive = await pluginCtx.remote.workspace.archiveSession({ sessionId: 'session-local-x' })
+assert.equal(localArchive.value?.method, 'archiveSession', 'Local archive must pass through')
+const localUnarchive = await pluginCtx.remote.workspace.unarchiveSession({ sessionId: 'session-local-x' })
+assert.equal(localUnarchive.value?.method, 'unarchiveSession', 'Local unarchive must pass through')
+
+// Workspace actions: pinSession & unpinSession
+// Remote branch: pinSession forwards to /remote-ssh/session-pin
+const pinRes = await pluginCtx.remote.workspace.pinSession({ sessionId: 'session-demo-1' })
+assert.ok(pinRes.ok, 'Remote pin request must succeed')
+assert.ok(pinRes.value?.pinnedSessionIds?.includes('session-demo-1'), 'Remote pin must return merged pinnedSessionIds')
+assert.ok(requestedUrls.some((u) => u.includes('/remote-ssh/session-pin')), 'Pin must hit /remote-ssh/session-pin')
+
+// Remote branch: unpinSession forwards to /remote-ssh/session-unpin
+const unpinRes = await pluginCtx.remote.workspace.unpinSession({ sessionId: 'session-demo-1' })
+assert.ok(unpinRes.ok, 'Remote unpin request must succeed')
+assert.ok(!unpinRes.value?.pinnedSessionIds?.includes('session-demo-1'), 'Remote unpin must remove session-demo-1')
+assert.ok(requestedUrls.some((u) => u.includes('/remote-ssh/session-unpin')), 'Unpin must hit /remote-ssh/session-unpin')
+
+// Local branch: workspace pin/unpin passes through
+const localPin = await pluginCtx.remote.workspace.pinSession({ sessionId: 'session-local-x' })
+assert.equal(localPin.value?.method, 'pinSession', 'Local pin must pass through')
+const localUnpin = await pluginCtx.remote.workspace.unpinSession({ sessionId: 'session-local-x' })
+assert.equal(localUnpin.value?.method, 'unpinSession', 'Local unpin must pass through')
+
 // Teardown: restore getters and remove injected remote rows.
 await fork.dispose()
 const restoredPage = await root.get('remote.session').page({ sessionId: 'session-local-x' }, null)
+const restoredWsArchive = await root.get('remote.workspace').archiveSession({ sessionId: 'session-local-x' })
+assert.equal(restoredWsArchive.value?.method, 'archiveSession', 'Teardown must restore remote.workspace.archiveSession')
 console.log(`teardown page passthrough method=${restoredPage.value?.method}`)
 console.log(`teardown removed sessions: ${removedSessions.length} workspaces: ${removedWorkspaces.length}`)

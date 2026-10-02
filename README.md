@@ -11,12 +11,13 @@
 ## 现状
 
 - `packages/dsh-plugin-remote-ssh`（已落地）：经 SSH 隧道聚合远程 DSH 实例的工作区与会话到本地 UI（方案 B）。
-  - SSH 隧道自动维护与重连 (`tunnel.ts`)
+  - SSH 隧道自动维护与多主机池化管理 (`tunnel.ts`, `manager.ts`)
+  - 本地 OpenSSH 密钥配置自动解析与未添加主机发现 (`ssh-config.ts`)
   - 远端进程 Token 读取与 authority 绑定 Cookie 自动置换，隧道就绪即预热 (`remote.ts`)
-  - 远端 `/api/session/list` 会话聚合 + 按 cwd 归并成"远程工作区" (`sessions.ts`)
-  - 对话输入框 `/remote-ssh` 人类命令（`inject = ['commands']`）(`command.ts`)
-  - 只读数据路由 `GET /remote-ssh/sessions`、`/remote-ssh/session`、`/remote-ssh/session-raw`（可选注入 `webServer`）(`route.ts`, `session-detail.ts`)
-  - **完整复用官方 UI**：Client 零自定义界面——远程工作区/会话 upsert 进官方 `workspaces`/`sessions` 模型（官方 `WorkspaceBrowser` 侧边栏树原样渲染），包装 `remote.session` 使官方 `ui-conversation` 消费远程原始 wire 事件 (`client.js`，手工维护；`src/client/index.ts` 为类型真源)
+  - 远端 `/api/session/list` 会话聚合 + 按 cwd 归并成"远程工作区" (`sessions.ts`, `source.ts`)
+  - 对话输入框 `/remote-ssh` 人类命令：`/remote-ssh` 查看已连接会话，`/remote-ssh add` 发现并动态添加未接入的密钥主机 (`command.ts`)
+  - 数据与操作路由：`GET /remote-ssh/sessions`、`/remote-ssh/available-hosts`、`POST /remote-ssh/add-host` 等 (`route.ts`)
+  - **完整复用官方 UI**：Client 零自定义界面——多远程主机工作区/会话 upsert 进官方 `workspaces`/`sessions` 模型（带主机前缀区分），包装 `remote.session` 使官方 `ui-conversation` 消费远程原始 wire 事件 (`client.js`)
 
 ## 快速开始与验证
 
