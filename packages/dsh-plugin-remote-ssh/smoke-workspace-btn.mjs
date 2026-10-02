@@ -20,10 +20,10 @@ const source = readFileSync(join(here, 'client.js'), 'utf8')
 // icon depicts the same parts separated and deliberately has no slash mark.
 const connectIcon = source.match(/const CONNECT_ICON_SVG = '([^']+)'/)?.[1] || ''
 const disconnectIcon = source.match(/const DISCONNECT_ICON_SVG = '([^']+)'/)?.[1] || ''
-assert.match(connectIcon, /M6 6\.5v2\.5M10 6\.5v2\.5/, 'Connected plug prongs must enter the socket')
-assert.match(connectIcon, /<rect x="3\.5" y="9" width="9" height="4"/, 'Connected icon must show the socket face')
-assert.match(disconnectIcon, /M6 5\.25v1\.5M10 5\.25v1\.5/, 'Disconnected plug must be lifted clear of the socket')
-assert.match(disconnectIcon, /<rect x="3\.5" y="10" width="9" height="3\.5"/, 'Disconnected icon must show the lower socket face')
+assert.match(connectIcon, /M6\.5 6h2\.5M6\.5 10h2\.5/, 'Connected plug prongs must enter the socket horizontally')
+assert.match(connectIcon, /<rect x="9" y="3\.5" width="4" height="9"/, 'Connected icon must show the horizontal socket face')
+assert.match(disconnectIcon, /M5\.25 6h1\.5M5\.25 10h1\.5/, 'Disconnected plug must be pulled clear horizontally')
+assert.match(disconnectIcon, /<rect x="10" y="3\.5" width="3\.5" height="9"/, 'Disconnected icon must show the separated socket face')
 assert.doesNotMatch(disconnectIcon, /M2\.5 13\.5L13\.5 2\.5|stroke-linecap="round"[^>]*\/?>.*L/, 'Disconnected icon must not use a slash')
 
 // Mini-DOM implementation
