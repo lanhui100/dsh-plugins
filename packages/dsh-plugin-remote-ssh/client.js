@@ -42,6 +42,7 @@ window.__ModuleLoader__.load({
     const SESSION_RENAME_ROUTE = '/remote-ssh/session-rename'
     const AVAILABLE_HOSTS_ROUTE = '/remote-ssh/available-hosts'
     const ADD_HOST_ROUTE = '/remote-ssh/add-host'
+    const REMOVE_HOST_ROUTE = '/remote-ssh/remove-host'
     /** Refresh the remote workspace/session projection this often (ms). */
     const POLL_INTERVAL_MS = 60_000
 
@@ -1919,25 +1920,40 @@ window.__ModuleLoader__.load({
             margin-bottom: 12px;
           }
           .dsh-popover-body {
-            max-height: 240px;
+            max-height: 260px;
             overflow-y: auto;
             display: flex;
             flex-direction: column;
-            gap: 8px;
+            gap: 4px;
+          }
+          .dsh-popover-section {
+            display: flex;
+            flex-direction: column;
+            gap: 4px;
+          }
+          .dsh-popover-section-title {
+            font-size: 11px;
+            line-height: 16px;
+            color: var(--dsw-alias-label-tertiary, #94a3b8);
+            padding: 4px 2px 0;
+          }
+          .dsh-popover-section-list {
+            display: flex;
+            flex-direction: column;
+            gap: 4px;
           }
           .dsh-remote-popover-item {
             display: flex;
             align-items: center;
             justify-content: space-between;
             gap: 8px;
-            padding: 8px 10px;
+            padding: 6px 10px;
             border-radius: var(--dsw-radius-md, 8px);
-            background: var(--dsw-alias-bg-module-platform, rgba(0, 0, 0, 0.03));
-            border: 1px solid transparent;
-            transition: all 120ms ease;
+            background: transparent;
+            transition: background 120ms ease;
           }
           .dsh-remote-popover-item:hover {
-            border-color: var(--dsw-alias-border-l2, rgba(0, 0, 0, 0.08));
+            background: var(--dsw-alias-interactive-bg-hover, rgba(0, 0, 0, 0.05));
           }
           .dsh-remote-popover-item-info {
             flex: 1;
@@ -1983,6 +1999,18 @@ window.__ModuleLoader__.load({
           .dsh-remote-popover-item-btn:disabled {
             cursor: default;
             opacity: 0.75;
+          }
+          /* Disconnect action for already-connected hosts — active blue. */
+          .dsh-remote-popover-item-btn--disconnect {
+            color: var(--dsw-alias-state-business-primary, var(--dsw-alias-color-brand-default, #2563eb));
+          }
+          .dsh-remote-popover-item-btn--disconnect:hover {
+            background: var(--dsw-alias-interactive-bg-hover, rgba(0, 0, 0, 0.05));
+            color: var(--dsw-alias-state-business-primary, var(--dsw-alias-color-brand-default, #2563eb));
+          }
+          /* Transient "connected" success state after a successful connect. */
+          .dsh-remote-popover-item-btn--success {
+            color: var(--dsw-alias-state-business-primary, var(--dsw-alias-color-brand-default, #2563eb));
           }
           .dsh-popover-empty {
             text-align: center;
@@ -2402,8 +2430,11 @@ window.__ModuleLoader__.load({
       if (popover) popover.remove()
     }
 
-    /** Official `IconPlusOutlineRegular` artwork, used by host add icon buttons. */
-    const PLUS_ICON_SVG = '<svg width="16" height="16" viewBox="0 0 16 16" fill="none" xmlns="http://www.w3.org/2000/svg" aria-hidden="true"><path d="M8 2V14" stroke="currentColor" stroke-width="1.2" stroke-linecap="round"/><path d="M2 8H14" stroke="currentColor" stroke-width="1.2" stroke-linecap="round"/></svg>'
+    /** Official `IconLinkOutlineRegular` artwork — the "connect host" action icon. */
+    const CONNECT_ICON_SVG = '<svg width="16" height="16" viewBox="0 0 16 16" fill="none" xmlns="http://www.w3.org/2000/svg" aria-hidden="true"><path d="M6.59961 9.40051C6.82779 9.6334 7.10015 9.81842 7.40074 9.94472C7.70132 10.071 8.02409 10.1361 8.35013 10.1361C8.67618 10.1361 8.99894 10.071 9.29953 9.94472C9.60011 9.81842 9.87247 9.6334 10.1007 9.40051L12.9015 6.59967C13.3658 6.13541 13.6266 5.50572 13.6266 4.84915C13.6266 4.19258 13.3658 3.56289 12.9015 3.09863C12.4372 2.63436 11.8075 2.37354 11.151 2.37354C10.4944 2.37354 9.86472 2.63436 9.40045 3.09863L9.05034 3.44873" stroke="currentColor" stroke-width="1.2" stroke-linecap="round" stroke-linejoin="round"/><path d="M9.40051 6.59959C9.17233 6.3667 8.89997 6.18169 8.59939 6.05538C8.2988 5.92907 7.97603 5.86401 7.64999 5.86401C7.32395 5.86401 7.00118 5.92907 6.70059 6.05538C6.40001 6.18169 6.12765 6.3667 5.89946 6.59959L3.09863 9.40043C2.63436 9.8647 2.37354 10.4944 2.37354 11.151C2.37354 11.8075 2.63436 12.4372 3.09863 12.9015C3.56289 13.3657 4.19258 13.6266 4.84915 13.6266C5.50572 13.6266 6.13541 13.3657 6.59967 12.9015L6.94978 12.5514" stroke="currentColor" stroke-width="1.2" stroke-linecap="round" stroke-linejoin="round"/></svg>'
+
+    /** "Disconnect host" action icon: the official link glyph with a break slash. */
+    const DISCONNECT_ICON_SVG = '<svg width="16" height="16" viewBox="0 0 16 16" fill="none" xmlns="http://www.w3.org/2000/svg" aria-hidden="true"><path d="M6.59961 9.40051C6.82779 9.6334 7.10015 9.81842 7.40074 9.94472C7.70132 10.071 8.02409 10.1361 8.35013 10.1361C8.67618 10.1361 8.99894 10.071 9.29953 9.94472C9.60011 9.81842 9.87247 9.6334 10.1007 9.40051L12.9015 6.59967C13.3658 6.13541 13.6266 5.50572 13.6266 4.84915C13.6266 4.19258 13.3658 3.56289 12.9015 3.09863C12.4372 2.63436 11.8075 2.37354 11.151 2.37354C10.4944 2.37354 9.86472 2.63436 9.40045 3.09863L9.05034 3.44873" stroke="currentColor" stroke-width="1.2" stroke-linecap="round" stroke-linejoin="round"/><path d="M9.40051 6.59959C9.17233 6.3667 8.89997 6.18169 8.59939 6.05538C8.2988 5.92907 7.97603 5.86401 7.64999 5.86401C7.32395 5.86401 7.00118 5.92907 6.70059 6.05538C6.40001 6.18169 6.12765 6.3667 5.89946 6.59959L3.09863 9.40043C2.63436 9.8647 2.37354 10.4944 2.37354 11.151C2.37354 11.8075 2.63436 12.4372 3.09863 12.9015C3.56289 13.3657 4.19258 13.6266 4.84915 13.6266C5.50572 13.6266 6.13541 13.3657 6.59967 12.9015L6.94978 12.5514" stroke="currentColor" stroke-width="1.2" stroke-linecap="round" stroke-linejoin="round"/><path d="M3.5 12.5L12.5 3.5" stroke="currentColor" stroke-width="1.2" stroke-linecap="round"/></svg>'
 
     /** Official `IconCheckCircleOutlineRegular` artwork, used by the success toast. */
     const TOAST_SUCCESS_ICON_SVG = '<svg width="16" height="16" viewBox="0 0 16 16" fill="none" xmlns="http://www.w3.org/2000/svg" aria-hidden="true"><path d="M12.5303 6.53027L8.80273 10.2578C8.54967 10.5109 8.31796 10.7439 8.10645 10.9141C7.88375 11.0932 7.616 11.2602 7.27344 11.3145C7.09229 11.3431 6.90771 11.3431 6.72656 11.3145C6.384 11.2602 6.11625 11.0932 5.89355 10.9141C5.68204 10.7439 5.45033 10.5109 5.19727 10.2578L3.46973 8.53027L4.53027 7.46973L6.25781 9.19727C6.53457 9.47402 6.70036 9.63859 6.83398 9.74609C6.95637 9.84453 6.98241 9.83644 6.96094 9.83301C6.98679 9.83709 7.01321 9.83709 7.03906 9.83301C7.01759 9.83644 7.04363 9.84453 7.16602 9.74609C7.29964 9.63859 7.46543 9.47402 7.74219 9.19727L11.4697 5.46973L12.5303 6.53027Z" fill="currentColor"/><path d="M14.5996 8C14.5996 4.35492 11.6451 1.40039 8 1.40039C4.35492 1.40039 1.40039 4.35492 1.40039 8C1.40039 11.6451 4.35492 14.5996 8 14.5996C11.6451 14.5996 14.5996 11.6451 14.5996 8ZM15.9004 8C15.9004 12.363 12.363 15.9004 8 15.9004C3.63695 15.9004 0.0996094 12.363 0.0996094 8C0.0996094 3.63695 3.63695 0.0996094 8 0.0996094C12.363 0.0996094 15.9004 3.63695 15.9004 8Z" fill="currentColor"/></svg>'
@@ -2503,8 +2534,8 @@ window.__ModuleLoader__.load({
       }
     }
 
-    /** Toggle a host-add button between idle (plus icon) and connecting (spinner). */
-    function setAddBusy(btn, busy) {
+    /** Toggle a host-action button between idle (icon) and connecting (spinner). */
+    function setAddBusy(btn, busy, idleIconSvg = CONNECT_ICON_SVG) {
       if (!btn) return
       btn.disabled = busy
       if (typeof btn.setAttribute === 'function') {
@@ -2517,7 +2548,7 @@ window.__ModuleLoader__.load({
         spinner.setAttribute('aria-hidden', 'true')
         btn.appendChild(spinner)
       } else {
-        btn.innerHTML = PLUS_ICON_SVG
+        btn.innerHTML = idleIconSvg
       }
     }
 
@@ -2598,7 +2629,7 @@ window.__ModuleLoader__.load({
 
       const hint = document.createElement('div')
       hint.className = 'dsh-popover-hint'
-      hint.textContent = '从本机 ~/.ssh/config 密钥连接的主机添加。若远端未启动，将自动拉起 dsh web 服务。'
+      hint.textContent = '已连接的主机可断开；未连接的主机一键接入，若远端未启动将自动拉起 dsh web 服务。'
 
       const body = document.createElement('div')
       body.className = 'dsh-popover-body'
@@ -2631,16 +2662,116 @@ window.__ModuleLoader__.load({
         }
       }, 10)
 
-      try {
+      const buildRowShell = (item) => {
+        const hostEl = document.createElement('div')
+        hostEl.className = 'dsh-remote-popover-item'
+        hostEl.dataset.host = item.host
+        const infoEl = document.createElement('div')
+        infoEl.className = 'dsh-remote-popover-item-info'
+        const nameEl = document.createElement('div')
+        nameEl.className = 'dsh-remote-popover-item-name'
+        nameEl.textContent = item.host
+        const detailEl = document.createElement('div')
+        detailEl.className = 'dsh-remote-popover-item-detail'
+        detailEl.textContent = `${item.hostName || ''}${item.port ? `:${item.port}` : ''}${item.user ? ` • ${item.user}` : ''}`
+        infoEl.appendChild(nameEl)
+        infoEl.appendChild(detailEl)
+        hostEl.appendChild(infoEl)
+        return hostEl
+      }
+
+      const wrapRow = (hostEl, feedbackEl) => {
+        const wrapEl = document.createElement('div')
+        wrapEl.style.display = 'flex'
+        wrapEl.style.flexDirection = 'column'
+        wrapEl.appendChild(hostEl)
+        wrapEl.appendChild(feedbackEl)
+        return wrapEl
+      }
+
+      const createSection = (title, kind) => {
+        const sectionEl = document.createElement('div')
+        sectionEl.className = `dsh-popover-section dsh-popover-section--${kind}`
+        const titleEl = document.createElement('div')
+        titleEl.className = 'dsh-popover-section-title'
+        titleEl.textContent = title
+        const listEl = document.createElement('div')
+        listEl.className = 'dsh-popover-section-list'
+        sectionEl.appendChild(titleEl)
+        sectionEl.appendChild(listEl)
+        return { sectionEl, listEl }
+      }
+
+      // Re-fetch the host lists and re-render both sections (used after a
+      // disconnect so the host moves back to the "可添加" section).
+      const refresh = async () => {
         const res = await fetch(AVAILABLE_HOSTS_ROUTE)
-        if (!res.ok) {
-          body.textContent = '获取可用主机失败'
-          return
-        }
-        const data = await res.json()
+        if (!res.ok) return
+        const next = await res.json().catch(() => null)
+        if (!next) return
+        render(next)
+      }
+
+      const render = (data) => {
+        const connectedHosts = Array.isArray(data.connectedHosts)
+          ? data.connectedHosts
+          : (Array.isArray(data.currentHosts) ? data.currentHosts.map((name) => ({ host: name })) : [])
         const availableHosts = Array.isArray(data.availableHosts) ? data.availableHosts : []
         body.textContent = ''
 
+        // --- Connected hosts: disconnect action ---------------------------
+        const connectedSec = createSection('已连接主机', 'connected')
+        if (connectedHosts.length === 0) {
+          const empty = document.createElement('div')
+          empty.className = 'dsh-popover-empty'
+          empty.textContent = '暂无已连接主机'
+          connectedSec.listEl.appendChild(empty)
+        } else {
+          for (const item of connectedHosts) {
+            const hostEl = buildRowShell(item)
+            const discBtn = document.createElement('button')
+            discBtn.className = 'dsh-remote-popover-item-btn dsh-remote-popover-item-btn--disconnect'
+            discBtn.type = 'button'
+            discBtn.setAttribute('aria-label', `断开主机 ${item.host}`)
+            discBtn.innerHTML = DISCONNECT_ICON_SVG
+            const feedbackEl = document.createElement('div')
+            feedbackEl.className = 'dsh-popover-feedback'
+            discBtn.addEventListener('click', async (ev) => {
+              if (ev && typeof ev.stopPropagation === 'function') ev.stopPropagation()
+              setAddBusy(discBtn, true, DISCONNECT_ICON_SVG)
+              feedbackEl.className = 'dsh-popover-feedback'
+              feedbackEl.textContent = '正在断开连接...'
+              try {
+                const postRes = await fetch(REMOVE_HOST_ROUTE, {
+                  method: 'POST',
+                  headers: { 'Content-Type': 'application/json' },
+                  body: JSON.stringify({ host: item.host }),
+                })
+                const postData = await postRes.json()
+                if (postRes.ok && postData.ok) {
+                  if (ctx) {
+                    void reconcileRemoteSource(ctx)
+                  }
+                  await refresh()
+                } else {
+                  setAddBusy(discBtn, false, DISCONNECT_ICON_SVG)
+                  feedbackEl.className = 'dsh-popover-feedback dsh-feedback-error'
+                  feedbackEl.textContent = postData.error || postData.message || '断开失败'
+                }
+              } catch (err) {
+                setAddBusy(discBtn, false, DISCONNECT_ICON_SVG)
+                feedbackEl.className = 'dsh-popover-feedback dsh-feedback-error'
+                feedbackEl.textContent = String(err.message || err)
+              }
+            })
+            hostEl.appendChild(discBtn)
+            connectedSec.listEl.appendChild(wrapRow(hostEl, feedbackEl))
+          }
+        }
+        body.appendChild(connectedSec.sectionEl)
+
+        // --- Available hosts: connect action ------------------------------
+        const availableSec = createSection('可添加主机', 'available')
         if (availableHosts.length === 0) {
           const empty = document.createElement('div')
           empty.className = 'dsh-popover-empty'
@@ -2649,87 +2780,76 @@ window.__ModuleLoader__.load({
           emptyDesc.className = 'dsh-popover-empty-desc'
           emptyDesc.textContent = '本地 ~/.ssh/config 中未找到带 IdentityFile 的新主机'
           empty.appendChild(emptyDesc)
-          body.appendChild(empty)
-          return
-        }
-
-        for (const item of availableHosts) {
-          const hostEl = document.createElement('div')
-          hostEl.className = 'dsh-remote-popover-item'
-          hostEl.dataset.host = item.host
-
-          const infoEl = document.createElement('div')
-          infoEl.className = 'dsh-remote-popover-item-info'
-          const nameEl = document.createElement('div')
-          nameEl.className = 'dsh-remote-popover-item-name'
-          nameEl.textContent = item.host
-          const detailEl = document.createElement('div')
-          detailEl.className = 'dsh-remote-popover-item-detail'
-          detailEl.textContent = `${item.hostName || ''}${item.port ? `:${item.port}` : ''}${item.user ? ` • ${item.user}` : ''}`
-          infoEl.appendChild(nameEl)
-          infoEl.appendChild(detailEl)
-
-          const addBtn = document.createElement('button')
-          addBtn.className = 'dsh-remote-popover-item-btn'
-          addBtn.type = 'button'
-          addBtn.setAttribute('aria-label', `添加主机 ${item.host}`)
-          addBtn.innerHTML = PLUS_ICON_SVG
-
-          const feedbackEl = document.createElement('div')
-          feedbackEl.className = 'dsh-popover-feedback'
-
-          const doAdd = async (ev) => {
-            if (ev && typeof ev.stopPropagation === 'function') ev.stopPropagation()
-            setAddBusy(addBtn, true)
+          availableSec.listEl.appendChild(empty)
+        } else {
+          for (const item of availableHosts) {
+            const hostEl = buildRowShell(item)
+            const addBtn = document.createElement('button')
+            addBtn.className = 'dsh-remote-popover-item-btn'
+            addBtn.type = 'button'
+            addBtn.setAttribute('aria-label', `连接主机 ${item.host}`)
+            addBtn.innerHTML = CONNECT_ICON_SVG
+            const feedbackEl = document.createElement('div')
             feedbackEl.className = 'dsh-popover-feedback'
-            feedbackEl.textContent = '正在检测远端 dsh 服务并建立隧道...'
-            try {
-              const postRes = await fetch(ADD_HOST_ROUTE, {
-                method: 'POST',
-                headers: { 'Content-Type': 'application/json' },
-                body: JSON.stringify({ host: item.host }),
-              })
-              const postData = await postRes.json()
-              if (postRes.ok && postData.ok) {
-                // Stay disabled (icon restored) until the popover closes, so the
-                // 700ms close window cannot trigger a duplicate add + toast.
-                setAddBusy(addBtn, false)
-                addBtn.disabled = true
-                const hostName = typeof postData.host === 'string' && postData.host ? postData.host : item.host
-                const autoStarted = Boolean(postData.autoStarted)
-                showRemoteToast(`主机 ${hostName} 连接成功${autoStarted ? '，并已在远端自动启动 dsh 服务' : ''}`)
-                if (ctx) {
-                  void reconcileRemoteSource(ctx)
+
+            const doAdd = async (ev) => {
+              if (ev && typeof ev.stopPropagation === 'function') ev.stopPropagation()
+              setAddBusy(addBtn, true)
+              feedbackEl.className = 'dsh-popover-feedback'
+              feedbackEl.textContent = '正在检测远端 dsh 服务并建立隧道...'
+              try {
+                const postRes = await fetch(ADD_HOST_ROUTE, {
+                  method: 'POST',
+                  headers: { 'Content-Type': 'application/json' },
+                  body: JSON.stringify({ host: item.host }),
+                })
+                const postData = await postRes.json()
+                if (postRes.ok && postData.ok) {
+                  // Success state: the icon flips to a blue success glyph and the
+                  // button stays disabled until the popover closes (700ms), so the
+                  // window cannot trigger a duplicate add + toast.
+                  setAddBusy(addBtn, false)
+                  addBtn.disabled = true
+                  addBtn.className = 'dsh-remote-popover-item-btn dsh-remote-popover-item-btn--success'
+                  addBtn.innerHTML = TOAST_SUCCESS_ICON_SVG
+                  const hostName = typeof postData.host === 'string' && postData.host ? postData.host : item.host
+                  const autoStarted = Boolean(postData.autoStarted)
+                  showRemoteToast(`主机 ${hostName} 连接成功${autoStarted ? '，并已在远端自动启动 dsh 服务' : ''}`)
+                  if (ctx) {
+                    void reconcileRemoteSource(ctx)
+                  }
+                  setTimeout(() => {
+                    removeOutsideClickListener()
+                    popover.remove()
+                  }, 700)
+                } else {
+                  setAddBusy(addBtn, false)
+                  feedbackEl.className = 'dsh-popover-feedback dsh-feedback-error'
+                  feedbackEl.textContent = postData.error || postData.message || '连接主机失败'
                 }
-                setTimeout(() => {
-                  removeOutsideClickListener()
-                  popover.remove()
-                }, 700)
-              } else {
+              } catch (err) {
                 setAddBusy(addBtn, false)
                 feedbackEl.className = 'dsh-popover-feedback dsh-feedback-error'
-                feedbackEl.textContent = postData.error || postData.message || '添加主机失败'
+                feedbackEl.textContent = String(err.message || err)
               }
-            } catch (err) {
-              setAddBusy(addBtn, false)
-              feedbackEl.className = 'dsh-popover-feedback dsh-feedback-error'
-              feedbackEl.textContent = String(err.message || err)
             }
+
+            addBtn.addEventListener('click', doAdd)
+            hostEl.appendChild(addBtn)
+            availableSec.listEl.appendChild(wrapRow(hostEl, feedbackEl))
           }
-
-          addBtn.addEventListener('click', doAdd)
-
-          hostEl.appendChild(infoEl)
-          hostEl.appendChild(addBtn)
-
-          const wrapEl = document.createElement('div')
-          wrapEl.style.display = 'flex'
-          wrapEl.style.flexDirection = 'column'
-          wrapEl.appendChild(hostEl)
-          wrapEl.appendChild(feedbackEl)
-
-          body.appendChild(wrapEl)
         }
+        body.appendChild(availableSec.sectionEl)
+      }
+
+      try {
+        const res = await fetch(AVAILABLE_HOSTS_ROUTE)
+        if (!res.ok) {
+          body.textContent = '获取可用主机失败'
+          return
+        }
+        const data = await res.json()
+        render(data)
       } catch (err) {
         body.textContent = `加载失败: ${err.message || err}`
       }

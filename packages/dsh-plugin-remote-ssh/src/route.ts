@@ -6,7 +6,7 @@ import { groupSessionsByWorkspace, listRemoteSessions } from './sessions.ts'
 import { projectRemoteSourceSnapshot, namespaceRemoteId, namespaceRemoteWorkspaceId, REMOTE_SOURCE_KIND } from './source.ts'
 import { getRemoteSessionDetail } from './session-detail.ts'
 import { RemoteHostManager } from './manager.ts'
-import { getAvailableSshHosts } from './ssh-config.ts'
+import { getAvailableSshHosts, parseSshConfig } from './ssh-config.ts'
 
 /** Absolute pathname the browser panel fetches for all workspaces and sessions. */
 export const SESSIONS_ROUTE = '/remote-ssh/sessions'
@@ -60,6 +60,9 @@ export const AVAILABLE_HOSTS_ROUTE = '/remote-ssh/available-hosts'
 
 /** Absolute pathname for dynamically adding a new remote SSH host. */
 export const ADD_HOST_ROUTE = '/remote-ssh/add-host'
+
+/** Absolute pathname for disconnecting and removing a remote SSH host. */
+export const REMOVE_HOST_ROUTE = '/remote-ssh/remove-host'
 
 
 /** The slice of the host web server this module registers against. */
@@ -337,7 +340,14 @@ export function registerRemoteSshRoute(
           ? (managerOrGetCaller as RemoteHostManager).getHostNames()
           : (hostLabel ? [hostLabel] : [])
         const availableHosts = getAvailableSshHosts({ sshConfigPath, currentHosts })
-        sendJson(res, 200, { currentHosts, availableHosts })
+        const currentSet = new Set(currentHosts.map((h) => h.toLowerCase().trim()))
+        const connectedHosts = currentHosts.map((name) => {
+          const detail = parseSshConfig(sshConfigPath).find(
+            (h) => h.host.toLowerCase().trim() === name.toLowerCase().trim(),
+          )
+          return detail ?? { host: name }
+        })
+        sendJson(res, 200, { currentHosts, connectedHosts, availableHosts })
       },
     }), 'remote-ssh: available hosts route')
 
@@ -386,6 +396,37 @@ export function registerRemoteSshRoute(
         }
       },
     }), 'remote-ssh: add host route')
+
+    scoped.effect(() => scoped.webServer.register({
+      kind: 'exact',
+      path: REMOVE_HOST_ROUTE,
+      handler: async (req, res) => {
+        if (!isManager) {
+          sendJson(res, 400, { error: 'not-supported', message: 'Multi-host manager is not active in this runtime.' })
+          return
+        }
+        const manager = managerOrGetCaller as RemoteHostManager
+        try {
+          const body = await readJsonBody(req)
+          const host = typeof body.host === 'string' ? body.host.trim() : ''
+          if (!host) {
+            sendJson(res, 400, { error: 'missing-host', message: 'Field "host" is required.' })
+            return
+          }
+          if (!manager.getHostNames().some((h) => h.toLowerCase() === host.toLowerCase())) {
+            sendJson(res, 400, { error: 'invalid-host', message: `Host "${host}" is not registered.` })
+            return
+          }
+          manager.removeHost(host)
+          sendJson(res, 200, { ok: true, host })
+        } catch (err) {
+          sendJson(res, 500, {
+            error: 'remove-failed',
+            message: err instanceof Error ? err.message : String(err),
+          })
+        }
+      },
+    }), 'remote-ssh: remove host route')
 
     scoped.effect(() => scoped.webServer.register({
       kind: 'exact',

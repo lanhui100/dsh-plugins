@@ -14,6 +14,7 @@ import {
   registerRemoteSshRoute,
   AVAILABLE_HOSTS_ROUTE,
   ADD_HOST_ROUTE,
+  REMOVE_HOST_ROUTE,
   SESSIONS_ROUTE,
   SESSION_RAW_ROUTE,
   SESSION_ARCHIVE_ROUTE,
@@ -109,6 +110,10 @@ try {
 
   assert.ok(availJson)
   assert.deepEqual(availJson.currentHosts, ['dev'])
+  // Already-connected hosts are returned with their ssh-config details.
+  assert.equal(availJson.connectedHosts.length, 1, 'connectedHosts must list current hosts')
+  assert.equal(availJson.connectedHosts[0].host, 'dev')
+  assert.equal(availJson.connectedHosts[0].hostName, 'devserver.internal.net')
   assert.equal(availJson.availableHosts.length, 1)
   assert.equal(availJson.availableHosts[0].host, 'preprod')
   assert.equal(availJson.availableHosts[0].port, 4022)
@@ -281,6 +286,40 @@ try {
 
   console.log('multi-host archive/pin mutation identity assertions passed')
 
+  // 8. POST /remote-ssh/remove-host deregisters a connected host so it can be
+  //    re-added (used by the disconnect button in the workspace header popover).
+  const removeHandler = routes.get(REMOVE_HOST_ROUTE)
+  assert.ok(removeHandler, `${REMOVE_HOST_ROUTE} must be registered`)
+
+  let removeJson = null
+  await removeHandler({
+    on(event, callback) {
+      if (event === 'data') callback(Buffer.from(JSON.stringify({ host: 'preprod' })))
+      if (event === 'end') callback()
+    },
+  }, {
+    writeHead: () => {},
+    end: (body) => { removeJson = JSON.parse(body) },
+  })
+  assert.equal(removeJson?.ok, true, 'remove-host must succeed')
+  assert.equal(removeJson.host, 'preprod')
+  assert.ok(
+    !manager.getHostNames().includes('preprod'),
+    'preprod must be deregistered after remove-host so it returns to the available list',
+  )
+
+  // 9. Removing an unknown host must fail cleanly.
+  let removeUnknownJson = null
+  await removeHandler({
+    on(event, callback) {
+      if (event === 'data') callback(Buffer.from(JSON.stringify({ host: 'ghost' })))
+      if (event === 'end') callback()
+    },
+  }, {
+    writeHead: () => {},
+    end: (body) => { removeUnknownJson = JSON.parse(body) },
+  })
+  assert.equal(removeUnknownJson?.error, 'invalid-host', 'remove-host for an unknown host must fail with invalid-host')
 
 } finally {
   try {

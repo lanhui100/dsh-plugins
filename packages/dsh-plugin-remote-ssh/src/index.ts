@@ -48,6 +48,7 @@ export {
   SESSION_RENAME_ROUTE,
   AVAILABLE_HOSTS_ROUTE,
   ADD_HOST_ROUTE,
+  REMOVE_HOST_ROUTE,
 } from './route.ts'
 export {
   REMOTE_SOURCE_KIND,

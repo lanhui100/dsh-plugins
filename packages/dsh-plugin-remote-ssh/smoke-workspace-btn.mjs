@@ -263,6 +263,8 @@ globalThis.window = {
 }
 
 const postedAddRequests = []
+/** Hosts sent to POST /remote-ssh/remove-host. */
+const postedRemoveRequests = []
 /** Deferred resolver for the in-flight POST /remote-ssh/add-host request. */
 let addHostResolve = null
 globalThis.fetch = async (url, options) => {
@@ -273,6 +275,7 @@ globalThis.fetch = async (url, options) => {
       status: 200,
       json: async () => ({
         currentHosts: ['dev'],
+        connectedHosts: [{ host: 'dev', hostName: 'dev.internal', port: 4022, user: 'dm' }],
         availableHosts: [
           { host: 'preprod', hostName: '100.97.143.121', port: 4022, user: 'dm' },
         ],
@@ -304,6 +307,11 @@ globalThis.fetch = async (url, options) => {
         json: async () => ({ ok: true, host: body.host, localPort: 39388, autoStarted: true }),
       })
     })
+  }
+  if (url === '/remote-ssh/remove-host' && method === 'POST') {
+    const body = options?.body ? JSON.parse(options.body) : {}
+    postedRemoveRequests.push(body)
+    return { ok: true, status: 200, json: async () => ({ ok: true, host: body.host }) }
   }
   return { ok: true, status: 200, json: async () => ({}) }
 }
@@ -433,29 +441,59 @@ await new Promise((resolve) => setTimeout(resolve, 50))
 const popover = doc.querySelector('#dsh-add-remote-popover')
 assert.ok(popover, '#dsh-add-remote-popover must be rendered upon clicking the button')
 
-// 4. Assert host list contains "preprod"
-const hostItem = popover.querySelector('.dsh-remote-popover-item')
-assert.ok(hostItem, 'Popover should render host items from available hosts')
-assert.ok(hostItem.textContent.includes('preprod'), 'Host item should include preprod')
+// Mini-DOM lacks descendant selectors, so scope items via the ancestor chain.
+const findSectionItem = (sectionClass) => {
+  const items = popover.querySelectorAll('.dsh-remote-popover-item')
+  return items.find((el) => {
+    let p = el.parentElement
+    while (p) {
+      if (typeof p.className === 'string' && p.className.includes(sectionClass)) return true
+      p = p.parentElement
+    }
+    return false
+  })
+}
 
-// 4b. Assert the per-host add control is a minimal icon-only button
-const connectBtn = hostItem.querySelector('.dsh-remote-popover-item-btn') || hostItem
-assert.ok(connectBtn, 'Host item must expose an icon-only add button')
-assert.equal(connectBtn.textContent, '', 'Add button must be icon-only (no visible text)')
-assert.ok(connectBtn.querySelector('svg'), 'Icon-only add button must render the plus icon')
-assert.ok(connectBtn.getAttribute('aria-label'), 'Icon-only add button must keep an accessible label')
-assert.ok(connectBtn.getAttribute('aria-label').includes('preprod'), 'Icon-only add button label must name the host')
+// 4. Connected hosts section: already-connected servers are shown with a
+//    disconnect action (active-blue disconnect icon), not a re-add plus.
+const connectedItem = findSectionItem('connected')
+assert.ok(connectedItem, 'Connected hosts section must render host rows')
+assert.ok(connectedItem.textContent.includes('dev'), 'Connected section must list the connected host')
+const disconnectBtn = connectedItem.querySelector('.dsh-remote-popover-item-btn')
+assert.ok(disconnectBtn, 'Connected host must expose a disconnect button')
+assert.ok(disconnectBtn.querySelector('svg'), 'Disconnect button must render an icon')
+assert.ok(disconnectBtn.getAttribute('aria-label').includes('dev'), 'Disconnect button label must name the host')
+assert.ok(disconnectBtn.getAttribute('aria-label').startsWith('断开主机'), 'Disconnect button must use disconnect semantics, not add')
 
-// 5. Click the connect/add button for preprod; assert loading state mid-flight
+// 4b. Disconnect flow posts /remote-ssh/remove-host.
+disconnectBtn.click()
+await new Promise((resolve) => setTimeout(resolve, 50))
+assert.equal(postedRemoveRequests.length, 1, 'POST /remote-ssh/remove-host must be dispatched on disconnect')
+assert.equal(postedRemoveRequests[0].host, 'dev')
+
+// 5. Available hosts section: unconnected hosts offer a connect action with a
+//    connection icon (no "+" re-add semantics).
+const availableItem = findSectionItem('available')
+assert.ok(availableItem, 'Available hosts section must render host rows')
+assert.ok(availableItem.textContent.includes('preprod'), 'Available section should include preprod')
+const connectBtn = availableItem.querySelector('.dsh-remote-popover-item-btn') || availableItem
+assert.ok(connectBtn, 'Available host must expose a connect button')
+assert.equal(connectBtn.textContent, '', 'Connect button must be icon-only (no visible text)')
+assert.ok(connectBtn.querySelector('svg'), 'Connect button must render an icon (not a plus)')
+assert.ok(connectBtn.getAttribute('aria-label'), 'Connect button must keep an accessible label')
+assert.ok(connectBtn.getAttribute('aria-label').startsWith('连接主机'), 'Connect button must use connect semantics, not add')
+assert.ok(connectBtn.getAttribute('aria-label').includes('preprod'), 'Connect button label must name the host')
+
+// 5b. Click the connect button for preprod; assert loading state mid-flight
 connectBtn.click()
 
 await new Promise((resolve) => setTimeout(resolve, 20))
 
 assert.equal(postedAddRequests.length, 1, 'POST /remote-ssh/add-host must be dispatched')
 assert.equal(postedAddRequests[0].host, 'preprod')
-assert.equal(connectBtn.disabled, true, 'Add button must be disabled while connecting')
-assert.equal(connectBtn.getAttribute('aria-busy'), 'true', 'Add button must announce busy state while connecting')
-assert.ok(connectBtn.querySelector('.dsh-remote-spinner'), 'Add button must show a spinner while connecting')
+assert.equal(connectBtn.disabled, true, 'Connect button must be disabled while connecting')
+assert.equal(connectBtn.getAttribute('aria-busy'), 'true', 'Connect button must announce busy state while connecting')
+assert.ok(connectBtn.querySelector('.dsh-remote-spinner'), 'Connect button must show a spinner while connecting')
 
 // 6. Resolve the in-flight add-host request; assert success toast
 assert.ok(addHostResolve, 'add-host request must be pending for the test to resolve')
@@ -471,10 +509,10 @@ assert.ok(toast.textContent.includes('启动 dsh 服务'), 'Toast must note the 
 assert.ok(toast.querySelector('.dsh-remote-toast-icon--success'), 'Toast must render the success check-circle icon')
 
 // 6b. After success the button must stay disabled until the popover closes,
-//     the spinner must be gone and the plus icon restored.
-assert.equal(connectBtn.disabled, true, 'Add button must stay disabled until the popover closes')
+//     the spinner must be gone and the icon flipped to the blue success glyph.
+assert.equal(connectBtn.disabled, true, 'Connect button must stay disabled until the popover closes')
 assert.equal(connectBtn.querySelector('.dsh-remote-spinner'), null, 'Spinner must be removed after success')
-assert.ok(connectBtn.querySelector('svg'), 'Plus icon must be restored after success')
+assert.ok(connectBtn.querySelector('svg'), 'Success glyph must be rendered after success')
 
 // 7. Tooltip behavior: official-style bubble on hover, ghost-free when the
 //    anchor is removed during the 500ms delay.

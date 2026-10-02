@@ -325,6 +325,34 @@ export class RemoteHostManager {
     }
   }
 
+  /**
+   * Disconnect and fully remove a host: disposes its tunnel/caller, drops the
+   * in-memory entry and persists the registry, so the host returns to the
+   * "available" list for reconnection. A config-provided (primary) host is
+   * re-registered from plugin config on the next startup.
+   * @throws when the host is unknown or a start is still in flight for it.
+   */
+  removeHost(hostName: string): void {
+    const trimmed = hostName.trim()
+    const entry = this.entries.get(trimmed)
+    if (!entry) {
+      throw new Error(`Host "${trimmed}" is not registered in RemoteHostManager.`)
+    }
+    if (this.startPromises.has(trimmed)) {
+      throw new Error(`Host "${trimmed}" is still connecting; retry once the connection settles.`)
+    }
+    entry.isReady = false
+    entry.isStarting = false
+    try {
+      entry.caller?.dispose()
+    } catch {}
+    if (entry.tunnel) {
+      void entry.tunnel.dispose().catch(() => {})
+    }
+    this.entries.delete(trimmed)
+    this.savePersistedHosts()
+  }
+
   /** Start all registered hosts in parallel. */
   async startAll(): Promise<void> {
     const promises: Promise<unknown>[] = []

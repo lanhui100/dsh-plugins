@@ -29,7 +29,7 @@
 - **实时事件与打字机流**：Host 端提供 `GET /remote-ssh/session-follow` SSE 路由，连接远端 `/api/remote.mux` WebSocket 订阅 `session/follow`，将远端推送的事件增量与 assistant 打字机流实时中继到官方会话面板。
 - **问答交互（`ask_user_question`）**：Host 端监听远端 WebSocket 的 `$events` 逻辑流，捕获模型发起的 `user-questions/request` 与取消事件，通过 `GET /remote-ssh/pending-interaction`、SSE 流实时分发以及 `POST /remote-ssh/interaction-respond` 提供应答通道；Client 端在 composer 输入区域就地挂载问答交互卡片（支持推荐徽标、单选/多选/自定义输入、跳过与提交），并接入 `uiSession.registerPendingInteraction` 驱动侧边栏待回答指示点，提交后调用远端 `$events/result` 解除工具挂起，形成双向交互闭环。
 - **多远程主机池化与配置页面下拉添加**：内置 `RemoteHostManager` 与本地 OpenSSH 配置解析器（`ssh-config.ts`），自动读取本机 `~/.ssh/config` 中已配置 `IdentityFile` 密钥认证的有效主机条目，排除通配符与已添加主机；在客户端『设置』面板中自动挂载『远程主机聚合 (Remote SSH)』卡片，通过下拉框展示未添加的密钥主机，点击即可一键建立隧道连接、持久化至 `$DSH_HOME/remote-ssh-hosts.json` 并即时刷新工作区；收口 `/remote-ssh` 命令行，输入带参指令将直接提示前往设置页面操作。
-- **工作区快捷添加与远端服务自动拉起**：在侧边栏工作区头部（`sectionHeader`）搜索图标左侧常驻“添加远程工作区”图标按钮（与官方 `iconButton` 完全同尺寸同样式，右侧操作簇内垂直对齐，tooltip 采用官方同款暗色气泡——底部、500ms 延迟），点击弹出浮层卡片，列出本机未添加的 SSH 密钥主机，每台主机右侧为极简纯图标（＋）添加按钮。执行添加时按钮进入 loading 态（spinner），内置 `RemoteLauncher` 自动执行远端端口与服务状态探测：若远端已运行 `dsh web` 则直接建立隧道连接；若未运行，则自动在远端常见路径（`~`、`~/work`、`/data` 等）检索 `deepseek-harness` 目录或全局 `dsh` 二进制，并在后台以 `nohup dsh web --port 3080` 拉起服务，轮询等待就绪后完成隧道连接；成功后弹出官方样式全局 Toast（顶部居中、成功绿勾、自动淡出），文案含“主机 <host> 连接成功”并在自动拉起时追加“并已在远端自动启动 dsh 服务”，随后刷新工作区聚合。
+- **工作区快捷添加与远端服务自动拉起**：在侧边栏工作区头部（`sectionHeader`）搜索图标左侧常驻“添加远程工作区”图标按钮（与官方 `iconButton` 完全同尺寸同样式，右侧操作簇内垂直对齐，tooltip 采用官方同款暗色气泡——底部、500ms 延迟），点击弹出浮层卡片，分为“已连接主机”与“可添加主机”两区（主机行间距紧凑、hover 为背景色变化）：已连接主机右侧为**断联图标按钮**（active 蓝色），点击即 `POST /remote-ssh/remove-host` 断开并移除（配置预置主机重启后会按配置恢复）；未连接主机右侧为**连接图标按钮**（官方链环图标，非 ＋ 的“重新添加”语义）。执行连接时按钮进入 loading 态（spinner），内置 `RemoteLauncher` 自动执行远端端口与服务状态探测：若远端已运行 `dsh web` 则直接建立隧道连接；若未运行，则自动在远端常见路径（`~`、`~/work`、`/data` 等）检索 `deepseek-harness` 目录或全局 `dsh` 二进制，并在后台以 `nohup dsh web --port 3080` 拉起服务，轮询等待就绪后完成隧道连接；成功后按钮以 active 蓝色展示连接成功图标，并弹出官方样式全局 Toast（顶部居中、成功绿勾、自动淡出），文案含“主机 <host> 连接成功”并在自动拉起时追加“并已在远端自动启动 dsh 服务”，随后刷新工作区聚合。
 - **主机接入不硬编码**：`config.host` 可选；省略时 `RemoteHostManager` 启动为空，全部主机经上述添加机制动态接入并持久化到 `$DSH_HOME/remote-ssh-hosts.json`，重启自动恢复。
 - 刷新：远程快照 60s 轮询（`POLL_INTERVAL_MS`），离开时移除注入行并恢复被代理的方法。
 
@@ -64,7 +64,7 @@
 ## limitations
 
 - 仅支持通过 OpenSSH 密钥免密登录的主机配置（如 `~/.ssh/config` 中带 `IdentityFile` 的 `Host` 块）；主机列表由该配置动态发现，无需在插件配置中预写主机别名。
-- 动态添加的主机持久化到 `$DSH_HOME/remote-ssh-hosts.json`；当前**没有移除主机的 UI**，误加的主机需手动编辑该文件（连接失败的新主机不会持久化，可直接重试）。
+- 动态添加的主机持久化到 `$DSH_HOME/remote-ssh-hosts.json`，可通过头部浮层/设置面板的“断开”操作移除（`POST /remote-ssh/remove-host`）；**配置预置（`config.host`）的主机断开后仅本会话失联，重启会按配置恢复**。连接失败的新主机不会持久化，可直接重试。
 - 远端主机需部署有 `deepseek-harness` 源码环境或安装有 `dsh`；若未启动，插件会在添加时自动探测并在后台启动 `dsh web`。
 - 远端会话图片读取（`attachment`）尚未接通（代理返回明确未接通错误）。
 - `/remote-ssh/*` 路由由本地 webserver 直接服务，**不经过 `/api` 的浏览器鉴权围栏**：本机任意进程可读该 JSON/SSE；若把 webserver 绑到非回环地址，网络侧同样可读（只读、默认回环绑定）。详见 `.agents/notes/implemented/architecture/2026-10-01-reuse-official-workspace-session-ui.md`。

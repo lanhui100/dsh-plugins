@@ -25,6 +25,11 @@ Status: implemented
   - 新主机添加“先内存注册、连接成功后再持久化”，失败即移除内存条目，避免 UI 无法恢复的墓碑主机；已连接主机重加时 `autoStarted` 按本次动作语义返回 `false`（评审 P2-3 / A-P3）。
   - tooltip `show()` 对已脱离 DOM 的 anchor 直接返回，杜绝 500ms 延迟窗口内的幽灵气泡；成功关闭窗口内按钮保持 disabled；浮层关闭路径统一移除 outside-click 监听（评审 A-P2-1 / P3）。
   - 静态 smoke 套件聚合为 `pnpm --filter dsh-plugin-remote-ssh test` 门禁命令；smoke 增加 HTMLCollection 语义回归守卫、tooltip 行为与幽灵气泡断言、成功态 disabled/图标恢复断言、无 primaryHost + 持久化恢复断言（评审 P2-4/5/6/7）。
+- **连接/断联语义与已连接主机管理（第二轮优化，同批落地）**：
+  - 浮层改为“已连接主机 / 可添加主机”两区：已连接主机始终展示，右侧为**断联图标按钮**（官方链环 + 断裂斜杠，active 蓝色 `--dsw-alias-state-business-primary`）；未连接主机右侧为**连接图标按钮**（官方链环 `IconLinkOutline`），彻底去掉 “＋” 的“重新添加”语义。
+  - Host 端新增 `RemoteHostManager.removeHost`（复用现有 dispose 链路，拒绝在 in-flight 连接期间移除）与 `POST /remote-ssh/remove-host` 路由；`GET /remote-ssh/available-hosts` 新增 `connectedHosts`（含 `~/.ssh/config` 详情的已连接主机），客户端断开成功后重取列表并刷新聚合。
+  - 连接成功后按钮转为 active 蓝色成功图标（短暂态，随后浮层关闭）；`setAddBusy` 支持按按钮语义恢复图标（连接/断联各自还原）。
+  - 面板间距收紧（主机行 `gap: 4px`、内边距 6px），hover 改为背景色变化（`--dsw-alias-interactive-bg-hover`），不再使用边框。
 
 ## Alternatives considered
 
@@ -33,10 +38,13 @@ Status: implemented
 - **复用官方 React `Tooltip`/`Toast` 组件**：被否决。插件 client 是 vanilla DOM（closure-factory 格式），无 React 运行上下文；改为逐条镜像官方 CSS 变量与关键帧（`--dsw-alias-tooltip-bg`、`--dsw-alias-toast-bg`、`dsh-toast-in/fade` 同值 keyframes 用插件前缀命名避免冲突），视觉与交互 1:1 对齐且对官方构建哈希变化免疫。
 - **保留 `config.host` 必填、把“dev”换成默认空串继续启动**：被否决。用户要求“不能硬编码”，改为可选配置 + 纯动态添加机制，启动配置不再隐含任何主机假设。
 - **浮层成功提示沿用浮层内反馈文字**：被否决。用户明确要求“官方 toast 样式提醒连接成功”；浮层内文字无法表达全局级完成通知，且会被随后的浮层关闭带走。
+- **继续使用 “＋” 图标作连接操作**：被否决。用户明确要求去掉“重新添加”语义，连接用官方链环图标；已连接主机用断联图标表达可断开状态。
+- **已连接主机不在浮层展示 / 断联仅关隧道不清除注册**：被否决。用户要求已连接服务器也同面板展示并带断联操作；仅关隧道会让主机处于“既不在已连接区也不在可添加区”的纠缠态，采用完全移除（注册与持久化一并清除），配置预置主机重启时由配置恢复。
 
 ## Consequences
 
 - 头部按钮与官方图标按钮在尺寸、颜色、hover、focus、垂直对齐与右侧簇位置完全一致，tooltip 呈现官方暗色气泡（底部、500ms 延迟）。
 - 浮层内主机添加为纯图标按钮，点击后可见 loading 态；连接成功出现官方样式全局 Toast，并明确提示远端 dsh 服务是否被自动拉起。
 - 不再需要把首台主机写入启动配置；主机接入全部经由统一添加机制，`host` 可选，既有静态首台主机配置仍兼容（提供 `host` 时行为不变）。
-- 既有 smoke 套件（workspace-btn / settings-ui / manager / multi-host / route 等）保持通过，workspace-btn 与 manager smoke 增加对纯图标按钮、loading、Toast、无首台主机场景的断言。
+- 浮层面板同时呈现已连接与可添加主机：连接（链环图标、loading、active 蓝成功态、官方 Toast）与断开（断联图标、`remove-host` 路由）形成双向闭环；配置预置主机断开后重启恢复，动态主机断开即移除可重新连接。
+- 既有 smoke 套件（workspace-btn / settings-ui / manager / multi-host / route 等）保持通过，workspace-btn 与 manager smoke 增加对纯图标按钮、loading、Toast、无首台主机场景的断言；本轮再增已连接区/断联流程与 `connectedHosts`/`remove-host` 路由断言。
