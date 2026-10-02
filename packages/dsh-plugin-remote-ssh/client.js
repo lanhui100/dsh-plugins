@@ -49,6 +49,99 @@ window.__ModuleLoader__.load({
     const remoteSessionIds = new Set()
     /** Known remote archived session ids from authoritative remote baseline. */
     let remoteArchivedSessionIds = new Set()
+    /** Local archived ids are tracked separately so remote ids absent from session/list cannot be resurrected. */
+    let localArchivedSessionIds = null
+    /** Known remote pinned session ids from authoritative remote baseline. */
+    let remotePinnedSessionIds = new Set()
+    /** Local pinned ids are tracked separately from remote mutation responses. */
+    let localPinnedSessionIds = null
+    /** Guard official archive writes triggered by our own synchronization. */
+    let syncingArchived = false
+    /** Guard official pin writes triggered by our own synchronization. */
+    let syncingPinned = false
+
+    function isNamespacedRemoteId(id) {
+      return typeof id === 'string' && id.startsWith('remote:')
+    }
+
+    function isRemoteStateId(id) {
+      return remoteSessionIds.has(id) || isNamespacedRemoteId(id)
+    }
+
+    function hostPrefixOf(id) {
+      if (!isNamespacedRemoteId(id)) return undefined
+      const secondColon = id.indexOf(':', 'remote:'.length)
+      return secondColon === -1 ? id : id.slice(0, secondColon + 1)
+    }
+
+    function mergeRemoteMutationIds(current, next, sessionId) {
+      const prefix = hostPrefixOf(sessionId)
+      if (!prefix) return [...new Set(next)]
+      const preserved = current.filter((id) => hostPrefixOf(id) !== prefix)
+      return [...new Set([...preserved, ...next])]
+    }
+
+    /** Merge remote archived session IDs into the official WorkspaceModel. */
+    function syncArchivedSessions(ctx) {
+      const workspaces = ctx.workspaces && ctx.workspaces.list
+      if (!workspaces) return
+      const current = Array.isArray(workspaces.archivedSessionIds) ? workspaces.archivedSessionIds.map(String) : []
+      if (localArchivedSessionIds === null) {
+        localArchivedSessionIds = new Set(current.filter((id) => !isRemoteStateId(id)))
+      }
+      const merged = [...new Set([...localArchivedSessionIds, ...remoteArchivedSessionIds])]
+      syncingArchived = true
+      try {
+        if (typeof workspaces.installArchived === 'function') {
+          workspaces.installArchived(merged)
+        } else if (typeof workspaces.replaceArchived === 'function') {
+          workspaces.replaceArchived(merged)
+        } else {
+          workspaces.archivedSessionIds = merged
+          if (typeof workspaces.invalidate === 'function') workspaces.invalidate()
+        }
+      } finally {
+        syncingArchived = false
+      }
+    }
+
+    function syncPinnedSessions(ctx) {
+      const workspaces = ctx.workspaces && ctx.workspaces.list
+      if (!workspaces) return
+      const current = Array.isArray(workspaces.pinnedSessionIds) ? workspaces.pinnedSessionIds.map(String) : []
+      if (localPinnedSessionIds === null) {
+        localPinnedSessionIds = new Set(current.filter((id) => !isRemoteStateId(id)))
+      }
+      const merged = [...new Set([...localPinnedSessionIds, ...remotePinnedSessionIds])]
+      syncingPinned = true
+      try {
+        if (typeof workspaces.installPinned === 'function') {
+          workspaces.installPinned(merged)
+        } else if (typeof workspaces.replacePinned === 'function') {
+          workspaces.replacePinned(merged)
+        } else {
+          workspaces.pinnedSessionIds = merged
+          if (typeof workspaces.invalidate === 'function') workspaces.invalidate()
+        }
+      } finally {
+        syncingPinned = false
+      }
+    }
+
+    function applyRemoteMutationIds(ctx, field, ids, sessionId) {
+      const normalized = Array.isArray(ids) ? ids.map(String) : []
+      if (field === 'archivedSessionIds') {
+        remoteArchivedSessionIds = new Set(
+          mergeRemoteMutationIds([...remoteArchivedSessionIds], normalized, sessionId),
+        )
+        syncArchivedSessions(ctx)
+      } else {
+        remotePinnedSessionIds = new Set(
+          mergeRemoteMutationIds([...remotePinnedSessionIds], normalized, sessionId),
+        )
+        syncPinnedSessions(ctx)
+      }
+    }
     /** Currently injected synthetic remote workspace ids, for diffing and teardown. */
     let injectedWorkspaceIds = new Set()
     /** Map of child subagent session id -> parent session id. */
@@ -113,36 +206,30 @@ window.__ModuleLoader__.load({
       }
     }
 
-    /** Merge remote archived session IDs into the official WorkspaceModel. */
-    function syncArchivedSessions(ctx) {
-      const workspaces = ctx.workspaces && ctx.workspaces.list
-      if (!workspaces) return
-      const current = workspaces.archivedSessionIds || []
-      const localArchived = current.filter((id) => !remoteSessionIds.has(id))
-      const merged = [...new Set([...localArchived, ...remoteArchivedSessionIds])]
-      if (typeof workspaces.installArchived === 'function') {
-        workspaces.installArchived(merged)
-      } else if (typeof workspaces.replaceArchived === 'function') {
-        workspaces.replaceArchived(merged)
-      } else {
-        workspaces.archivedSessionIds = merged
-        if (typeof workspaces.invalidate === 'function') workspaces.invalidate()
-      }
-    }
-
     /** Intercept replaceBaseline and replaceArchived so remote workspaces and archived sessions persist. */
     function installWorkspaceGuardian(ctx) {
       const workspaces = ctx.workspaces && ctx.workspaces.list
       if (!workspaces) return () => {}
       const originalReplaceBaseline = workspaces.replaceBaseline
       const originalReplaceArchived = workspaces.replaceArchived
+      const originalInstallPinned = workspaces.installPinned
+      const originalReplacePinned = workspaces.replacePinned
 
       if (typeof originalReplaceBaseline === 'function') {
         workspaces.replaceBaseline = function (baseline) {
           const result = originalReplaceBaseline.call(this, baseline)
+          if (!syncingArchived) {
+            const ids = Array.isArray(this.archivedSessionIds) ? this.archivedSessionIds.map(String) : []
+            localArchivedSessionIds = new Set(ids.filter((id) => !isRemoteStateId(id)))
+          }
+          if (!syncingPinned) {
+            const ids = Array.isArray(this.pinnedSessionIds) ? this.pinnedSessionIds.map(String) : []
+            localPinnedSessionIds = new Set(ids.filter((id) => !isRemoteStateId(id)))
+          }
           try {
             reapplyRemoteWorkspaces(ctx)
             syncArchivedSessions(ctx)
+            syncPinnedSessions(ctx)
           } catch {
             // Persistence hook must not crash baseline processing.
           }
@@ -153,10 +240,34 @@ window.__ModuleLoader__.load({
       if (typeof originalReplaceArchived === 'function') {
         workspaces.replaceArchived = function (archivedSessionIds) {
           const result = originalReplaceArchived.call(this, archivedSessionIds)
-          try {
+          if (!syncingArchived) {
+            const ids = Array.isArray(archivedSessionIds) ? archivedSessionIds.map(String) : []
+            localArchivedSessionIds = new Set(ids.filter((id) => !isRemoteStateId(id)))
             syncArchivedSessions(ctx)
-          } catch {
-            // Persistence hook must not crash archive updates.
+          }
+          return result
+        }
+      }
+
+      if (typeof originalReplacePinned === 'function') {
+        workspaces.replacePinned = function (pinnedSessionIds) {
+          const result = originalReplacePinned.call(this, pinnedSessionIds)
+          if (!syncingPinned) {
+            const ids = Array.isArray(pinnedSessionIds) ? pinnedSessionIds.map(String) : []
+            localPinnedSessionIds = new Set(ids.filter((id) => !isRemoteStateId(id)))
+            syncPinnedSessions(ctx)
+          }
+          return result
+        }
+      }
+
+      if (typeof originalInstallPinned === 'function') {
+        workspaces.installPinned = function (pinnedSessionIds) {
+          const result = originalInstallPinned.call(this, pinnedSessionIds)
+          if (!syncingPinned) {
+            const ids = Array.isArray(pinnedSessionIds) ? pinnedSessionIds.map(String) : []
+            localPinnedSessionIds = new Set(ids.filter((id) => !isRemoteStateId(id)))
+            syncPinnedSessions(ctx)
           }
           return result
         }
@@ -165,6 +276,8 @@ window.__ModuleLoader__.load({
       return () => {
         if (originalReplaceBaseline) workspaces.replaceBaseline = originalReplaceBaseline
         if (originalReplaceArchived) workspaces.replaceArchived = originalReplaceArchived
+        if (originalInstallPinned) workspaces.installPinned = originalInstallPinned
+        if (originalReplacePinned) workspaces.replacePinned = originalReplacePinned
       }
     }
 
@@ -178,12 +291,28 @@ window.__ModuleLoader__.load({
         if (workspaces && typeof workspaces.removeView === 'function') {
           for (const wid of injectedWorkspaceIds) workspaces.removeView(wid)
         }
-        // Remove remote archived session IDs from official registry
+        // Remove remote archived and pinned session IDs from official registry
         if (workspaces && workspaces.archivedSessionIds) {
           const current = workspaces.archivedSessionIds
           const restored = current.filter((id) => !remoteArchivedSessionIds.has(id))
-          if (typeof workspaces.installArchived === 'function') workspaces.installArchived(restored)
-          else workspaces.archivedSessionIds = restored
+          syncingArchived = true
+          try {
+            if (typeof workspaces.installArchived === 'function') workspaces.installArchived(restored)
+            else workspaces.archivedSessionIds = restored
+          } finally {
+            syncingArchived = false
+          }
+        }
+        if (workspaces && workspaces.pinnedSessionIds) {
+          const current = workspaces.pinnedSessionIds
+          const restored = current.filter((id) => !remotePinnedSessionIds.has(id))
+          syncingPinned = true
+          try {
+            if (typeof workspaces.installPinned === 'function') workspaces.installPinned(restored)
+            else workspaces.pinnedSessionIds = restored
+          } finally {
+            syncingPinned = false
+          }
         }
       } catch {
         // Teardown must not throw into the loader.
@@ -191,6 +320,9 @@ window.__ModuleLoader__.load({
       cachedWorkspaceViews = []
       remoteSessionIds.clear()
       remoteArchivedSessionIds.clear()
+      remotePinnedSessionIds.clear()
+      localArchivedSessionIds = null
+      localPinnedSessionIds = null
       injectedWorkspaceIds = new Set()
       sessionParents.clear()
     }
@@ -215,9 +347,12 @@ window.__ModuleLoader__.load({
       const nextSessions = []
       const displayHost = formatHostLabel(body.host)
 
-      // Store remote archived sessions
+      // Store remote archived and pinned sessions
       remoteArchivedSessionIds = new Set(
         Array.isArray(body.archivedSessionIds) ? body.archivedSessionIds.map(String) : []
+      )
+      remotePinnedSessionIds = new Set(
+        Array.isArray(body.pinnedSessionIds) ? body.pinnedSessionIds.map(String) : []
       )
 
       const allSessions = Array.isArray(body.sessions) ? body.sessions : []
@@ -334,8 +469,9 @@ window.__ModuleLoader__.load({
       for (const id of nextSessionIds) remoteSessionIds.add(id)
       injectedWorkspaceIds = new Set(nextWorkspaceViews.keys())
 
-      // Synchronize archived sessions into official workspace list
+      // Synchronize archived and pinned sessions into official workspace list
       syncArchivedSessions(ctx)
+      syncPinnedSessions(ctx)
     }
 
     /** Wrap `ctx.remote.session` so remote ids are served from the tunnel, locals unchanged. */
@@ -724,11 +860,11 @@ window.__ModuleLoader__.load({
                   const remoteArchived = Array.isArray(data.value?.archivedSessionIds)
                     ? data.value.archivedSessionIds.map(String)
                     : []
-                  remoteArchivedSessionIds = new Set(remoteArchived)
-                  const currentAll = (ctx.workspaces && ctx.workspaces.list && ctx.workspaces.list.archivedSessionIds) || []
-                  const localArchived = currentAll.filter((id) => !remoteSessionIds.has(id))
-                  const mergedArchived = [...new Set([...localArchived, ...remoteArchived])]
-                  syncArchivedSessions(ctx)
+                  applyRemoteMutationIds(ctx, 'archivedSessionIds', remoteArchived, sid)
+                  const mergedArchived = [...new Set([
+                    ...(localArchivedSessionIds || []),
+                    ...remoteArchivedSessionIds,
+                  ])]
                   return { ok: true, value: { archivedSessionIds: mergedArchived } }
                 }
                 return { ok: false, error: new Error(data?.error?.message || `HTTP ${res.status}`) }
@@ -751,11 +887,11 @@ window.__ModuleLoader__.load({
                   const remoteArchived = Array.isArray(data.value?.archivedSessionIds)
                     ? data.value.archivedSessionIds.map(String)
                     : []
-                  remoteArchivedSessionIds = new Set(remoteArchived)
-                  const currentAll = (ctx.workspaces && ctx.workspaces.list && ctx.workspaces.list.archivedSessionIds) || []
-                  const localArchived = currentAll.filter((id) => !remoteSessionIds.has(id))
-                  const mergedArchived = [...new Set([...localArchived, ...remoteArchived])]
-                  syncArchivedSessions(ctx)
+                  applyRemoteMutationIds(ctx, 'archivedSessionIds', remoteArchived, sid)
+                  const mergedArchived = [...new Set([
+                    ...(localArchivedSessionIds || []),
+                    ...remoteArchivedSessionIds,
+                  ])]
                   return { ok: true, value: { archivedSessionIds: mergedArchived } }
                 }
                 return { ok: false, error: new Error(data?.error?.message || `HTTP ${res.status}`) }
@@ -778,9 +914,11 @@ window.__ModuleLoader__.load({
                   const remotePinned = Array.isArray(data.value?.pinnedSessionIds)
                     ? data.value.pinnedSessionIds.map(String)
                     : []
-                  const currentAll = (ctx.workspaces && ctx.workspaces.list && ctx.workspaces.list.pinnedSessionIds) || []
-                  const localPinned = currentAll.filter((id) => !remoteSessionIds.has(id))
-                  const mergedPinned = [...new Set([...localPinned, ...remotePinned])]
+                  applyRemoteMutationIds(ctx, 'pinnedSessionIds', remotePinned, sid)
+                  const mergedPinned = [...new Set([
+                    ...(localPinnedSessionIds || []),
+                    ...remotePinnedSessionIds,
+                  ])]
                   return { ok: true, value: { pinnedSessionIds: mergedPinned } }
                 }
                 return { ok: false, error: new Error(data?.error?.message || `HTTP ${res.status}`) }
@@ -803,9 +941,11 @@ window.__ModuleLoader__.load({
                   const remotePinned = Array.isArray(data.value?.pinnedSessionIds)
                     ? data.value.pinnedSessionIds.map(String)
                     : []
-                  const currentAll = (ctx.workspaces && ctx.workspaces.list && ctx.workspaces.list.pinnedSessionIds) || []
-                  const localPinned = currentAll.filter((id) => !remoteSessionIds.has(id))
-                  const mergedPinned = [...new Set([...localPinned, ...remotePinned])]
+                  applyRemoteMutationIds(ctx, 'pinnedSessionIds', remotePinned, sid)
+                  const mergedPinned = [...new Set([
+                    ...(localPinnedSessionIds || []),
+                    ...remotePinnedSessionIds,
+                  ])]
                   return { ok: true, value: { pinnedSessionIds: mergedPinned } }
                 }
                 return { ok: false, error: new Error(data?.error?.message || `HTTP ${res.status}`) }

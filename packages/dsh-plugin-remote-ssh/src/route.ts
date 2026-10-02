@@ -93,6 +93,21 @@ function sendJson(res: HttpResponseLike, status: number, value: unknown): void {
   res.end(body)
 }
 
+function namespaceSessionMutationResult(
+  host: string,
+  value: unknown,
+  field: 'archivedSessionIds' | 'pinnedSessionIds',
+): unknown {
+  if (value === null || typeof value !== 'object' || Array.isArray(value)) return value
+  const record = value as Record<string, unknown>
+  const ids = record[field]
+  if (!Array.isArray(ids)) return value
+  return {
+    ...record,
+    [field]: ids.map((id) => namespaceRemoteId(host, String(id))),
+  }
+}
+
 async function readJsonBody(req: unknown): Promise<Record<string, unknown>> {
   const incoming = req as { on?: (event: string, cb: (...args: unknown[]) => void) => void }
   if (typeof incoming?.on !== 'function') return {}
@@ -884,7 +899,12 @@ export function registerRemoteSshRoute(
             return
           }
           const result = await target.caller.archiveRemoteSession(target.originalSessionId, { stopActivity })
-          sendJson(res, 200, { ok: true, value: result })
+          sendJson(res, 200, {
+            ok: true,
+            value: isManager
+              ? namespaceSessionMutationResult(target.host, result, 'archivedSessionIds')
+              : result,
+          })
         } catch (error) {
           sendJson(res, 200, {
             ok: false,
@@ -911,7 +931,12 @@ export function registerRemoteSshRoute(
             return
           }
           const result = await target.caller.unarchiveRemoteSession(target.originalSessionId)
-          sendJson(res, 200, { ok: true, value: result })
+          sendJson(res, 200, {
+            ok: true,
+            value: isManager
+              ? namespaceSessionMutationResult(target.host, result, 'archivedSessionIds')
+              : result,
+          })
         } catch (error) {
           sendJson(res, 200, {
             ok: false,
@@ -938,7 +963,12 @@ export function registerRemoteSshRoute(
             return
           }
           const result = await target.caller.pinRemoteSession(target.originalSessionId)
-          sendJson(res, 200, { ok: true, value: result })
+          sendJson(res, 200, {
+            ok: true,
+            value: isManager
+              ? namespaceSessionMutationResult(target.host, result, 'pinnedSessionIds')
+              : result,
+          })
         } catch (error) {
           sendJson(res, 200, {
             ok: false,
@@ -965,7 +995,12 @@ export function registerRemoteSshRoute(
             return
           }
           const result = await target.caller.unpinRemoteSession(target.originalSessionId)
-          sendJson(res, 200, { ok: true, value: result })
+          sendJson(res, 200, {
+            ok: true,
+            value: isManager
+              ? namespaceSessionMutationResult(target.host, result, 'pinnedSessionIds')
+              : result,
+          })
         } catch (error) {
           sendJson(res, 200, {
             ok: false,
