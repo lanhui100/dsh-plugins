@@ -28,7 +28,7 @@ Status: implemented
 - **连接/断联语义与已连接主机管理（第二、三轮优化迭代，同批落地）**：
   - 浮层改为“已连接主机 / 可添加主机”两区：已连接主机始终展示，右侧为**断开图标按钮**（插头与插座左右分离、保留清晰间隙，不使用斜线或删除符号，active 蓝色 `--dsw-alias-state-business-primary`）；未连接主机右侧为**连接图标按钮**（插头双脚从左侧水平插入插座插孔并形成咬合式样），彻底去掉 “＋” 的“重新添加”语义。主机行带灰色圆角底（`--dsw-alias-bg-module-platform`）、hover 背景加深（`--dsw-alias-interactive-bg-hover`）。
   - Host 端新增 `RemoteHostManager.removeHost`（复用现有 dispose 链路，拒绝在 in-flight 连接期间移除）与 `POST /remote-ssh/remove-host` 路由；`GET /remote-ssh/available-hosts` 新增 `connectedHosts`（含 `~/.ssh/config` 详情的已连接主机），客户端断开成功后重取列表并刷新聚合。
-  - 主机行动按钮（连接/断开）均复用项目统一 `attachTooltip`：底部定位、500ms 延迟、无原生 `title`，tooltip 文案分别为“连接主机 <host>”与“断开主机 <host>”。
+  - Tooltip 浮层显式使用高于远程 Popover 的 stacking layer（`z-index: 11000`；Popover 为 `10000`），避免图标 tooltip 被浮层内容遮挡。
   - 面板间距收紧（主机行 `gap: 4px` → 后续再收紧至 `2px`、内边距 `6px → 4px`），hover 改为背景色变化（`--dsw-alias-interactive-bg-hover`），不再使用边框。
   - **容错响应解析与错误信息透传**：连接/断联/列表等所有 fetch 响应改走 `parseJsonResponse`（先 `text()` 后 `json()` 双通道、全程不抛），若响应为空（如未重启桌面端导致新路由未命中落入 405 静态 fallback）显示明确引导“服务端无响应，请重启桌面端后重试”；连接失败透传服务端的具体错误详情（而不是仅抛出 `add-failed` 状态码），且 `startHost` 不再因自动探查 harness 路径未果而过早放弃，允许后续 SSH 隧道尝试连接已存在的后台服务。
 

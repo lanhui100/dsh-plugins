@@ -2041,7 +2041,7 @@ window.__ModuleLoader__.load({
             align-items: center;
             gap: 8px;
             position: fixed;
-            z-index: 100;
+            z-index: 11000;
             width: max-content;
             max-width: 50vw;
             padding: 3px 7px;

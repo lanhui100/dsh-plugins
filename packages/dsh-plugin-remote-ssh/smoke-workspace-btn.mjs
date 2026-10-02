@@ -488,6 +488,7 @@ assert.ok(disconnectBtn.getAttribute('aria-label').includes('dev'), 'Disconnect 
 assert.ok(disconnectBtn.getAttribute('aria-label').startsWith('断开主机'), 'Disconnect button must use disconnect semantics, not add')
 assert.match(source, /discBtn\._dshTooltipDisposer\s*=\s*attachTooltip\(discBtn, `断开主机 \$\{item\.host\}`/, 'Disconnect icon must attach the project tooltip')
 assert.match(source, /addBtn\._dshTooltipDisposer\s*=\s*attachTooltip\(addBtn, `连接主机 \$\{item\.host\}`/, 'Connect icon must attach the project tooltip')
+assert.match(source, /\.dsh-remote-tooltip\s*\{[\s\S]*?z-index:\s*11000;/, 'Project tooltips must render above the remote popover')
 
 // 4b. Disconnect flow posts /remote-ssh/remove-host.
 disconnectBtn.click()
