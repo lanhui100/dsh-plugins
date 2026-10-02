@@ -2757,6 +2757,7 @@ window.__ModuleLoader__.load({
             discBtn.type = 'button'
             discBtn.setAttribute('aria-label', `断开主机 ${item.host}`)
             discBtn.innerHTML = DISCONNECT_ICON_SVG
+             discBtn._dshTooltipDisposer = attachTooltip(discBtn, `断开主机 ${item.host}`, { side: 'bottom', delayMs: TOOLTIP_DELAY_MS })
             const feedbackEl = document.createElement('div')
             feedbackEl.className = 'dsh-popover-feedback'
             discBtn.addEventListener('click', async (ev) => {
@@ -2812,6 +2813,7 @@ window.__ModuleLoader__.load({
             addBtn.type = 'button'
             addBtn.setAttribute('aria-label', `连接主机 ${item.host}`)
             addBtn.innerHTML = CONNECT_ICON_SVG
+             addBtn._dshTooltipDisposer = attachTooltip(addBtn, `连接主机 ${item.host}`, { side: 'bottom', delayMs: TOOLTIP_DELAY_MS })
             const feedbackEl = document.createElement('div')
             feedbackEl.className = 'dsh-popover-feedback'
 

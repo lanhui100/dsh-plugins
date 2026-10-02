@@ -486,6 +486,8 @@ assert.ok(disconnectBtn, 'Connected host must expose a disconnect button')
 assert.ok(disconnectBtn.querySelector('svg'), 'Disconnect button must render an icon')
 assert.ok(disconnectBtn.getAttribute('aria-label').includes('dev'), 'Disconnect button label must name the host')
 assert.ok(disconnectBtn.getAttribute('aria-label').startsWith('断开主机'), 'Disconnect button must use disconnect semantics, not add')
+assert.match(source, /discBtn\._dshTooltipDisposer\s*=\s*attachTooltip\(discBtn, `断开主机 \$\{item\.host\}`/, 'Disconnect icon must attach the project tooltip')
+assert.match(source, /addBtn\._dshTooltipDisposer\s*=\s*attachTooltip\(addBtn, `连接主机 \$\{item\.host\}`/, 'Connect icon must attach the project tooltip')
 
 // 4b. Disconnect flow posts /remote-ssh/remove-host.
 disconnectBtn.click()
