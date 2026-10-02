@@ -2431,11 +2431,11 @@ window.__ModuleLoader__.load({
       if (popover) popover.remove()
     }
 
-    /** "Connect host" icon: plug prongs inserted into a wall socket. */
-    const CONNECT_ICON_SVG = '<svg width="16" height="16" viewBox="0 0 16 16" fill="none" xmlns="http://www.w3.org/2000/svg" aria-hidden="true"><rect x="3" y="6.75" width="10" height="4.5" rx="2.25" stroke="currentColor" stroke-width="1.4"/><path d="M6 3v6M10 3v6" stroke="currentColor" stroke-width="1.4" stroke-linecap="round"/></svg>'
+    /** "Connect host" icon: plug inserted into a socket with pins bridging the receptacle. */
+    const CONNECT_ICON_SVG = '<svg width="16" height="16" viewBox="0 0 16 16" fill="none" xmlns="http://www.w3.org/2000/svg" aria-hidden="true"><path d="M8 1v2M8 13v2" stroke="currentColor" stroke-width="1.3" stroke-linecap="round"/><rect x="4.5" y="3" width="7" height="3.5" rx="1.2" stroke="currentColor" stroke-width="1.3"/><path d="M6 6.5v2.5M10 6.5v2.5" stroke="currentColor" stroke-width="1.3" stroke-linecap="round"/><rect x="3.5" y="9" width="9" height="4" rx="1.5" stroke="currentColor" stroke-width="1.3"/></svg>'
 
-    /** "Disconnect host" icon: socket with a break slash (unplug). */
-    const DISCONNECT_ICON_SVG = '<svg width="16" height="16" viewBox="0 0 16 16" fill="none" xmlns="http://www.w3.org/2000/svg" aria-hidden="true"><rect x="3" y="6.75" width="10" height="4.5" rx="2.25" stroke="currentColor" stroke-width="1.4"/><path d="M6 3v6M10 3v6" stroke="currentColor" stroke-width="1.4" stroke-linecap="round"/><path d="M13 3L3 13" stroke="currentColor" stroke-width="1.4" stroke-linecap="round"/></svg>'
+    /** "Disconnect host" icon: plug separated from socket with a visible gap and diagonal slash. */
+    const DISCONNECT_ICON_SVG = '<svg width="16" height="16" viewBox="0 0 16 16" fill="none" xmlns="http://www.w3.org/2000/svg" aria-hidden="true"><rect x="4.5" y="1.5" width="7" height="3" rx="1" stroke="currentColor" stroke-width="1.2"/><path d="M6 4.5v2M10 4.5v2" stroke="currentColor" stroke-width="1.2" stroke-linecap="round"/><rect x="3.5" y="10" width="9" height="3.5" rx="1.2" stroke="currentColor" stroke-width="1.2"/><path d="M2.5 13.5L13.5 2.5" stroke="currentColor" stroke-width="1.3" stroke-linecap="round"/></svg>'
 
     /** Official `IconCheckCircleOutlineRegular` artwork, used by the success toast. */
     const TOAST_SUCCESS_ICON_SVG = '<svg width="16" height="16" viewBox="0 0 16 16" fill="none" xmlns="http://www.w3.org/2000/svg" aria-hidden="true"><path d="M12.5303 6.53027L8.80273 10.2578C8.54967 10.5109 8.31796 10.7439 8.10645 10.9141C7.88375 11.0932 7.616 11.2602 7.27344 11.3145C7.09229 11.3431 6.90771 11.3431 6.72656 11.3145C6.384 11.2602 6.11625 11.0932 5.89355 10.9141C5.68204 10.7439 5.45033 10.5109 5.19727 10.2578L3.46973 8.53027L4.53027 7.46973L6.25781 9.19727C6.53457 9.47402 6.70036 9.63859 6.83398 9.74609C6.95637 9.84453 6.98241 9.83644 6.96094 9.83301C6.98679 9.83709 7.01321 9.83709 7.03906 9.83301C7.01759 9.83644 7.04363 9.84453 7.16602 9.74609C7.29964 9.63859 7.46543 9.47402 7.74219 9.19727L11.4697 5.46973L12.5303 6.53027Z" fill="currentColor"/><path d="M14.5996 8C14.5996 4.35492 11.6451 1.40039 8 1.40039C4.35492 1.40039 1.40039 4.35492 1.40039 8C1.40039 11.6451 4.35492 14.5996 8 14.5996C11.6451 14.5996 14.5996 11.6451 14.5996 8ZM15.9004 8C15.9004 12.363 12.363 15.9004 8 15.9004C3.63695 15.9004 0.0996094 12.363 0.0996094 8C0.0996094 3.63695 3.63695 0.0996094 8 0.0996094C12.363 0.0996094 15.9004 3.63695 15.9004 8Z" fill="currentColor"/></svg>'
@@ -2848,7 +2848,7 @@ window.__ModuleLoader__.load({
                 } else {
                   setAddBusy(addBtn, false)
                   feedbackEl.className = 'dsh-popover-feedback dsh-feedback-error'
-                  feedbackEl.textContent = postData?.error || postData?.message || '连接主机失败：服务端无响应，请重启桌面端后重试'
+                  feedbackEl.textContent = (postData && (postData.error || postData.message)) ? `${postData.message || postData.error}` : '连接主机失败'
                 }
               } catch (err) {
                 setAddBusy(addBtn, false)

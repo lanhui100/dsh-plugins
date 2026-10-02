@@ -226,12 +226,11 @@ export class RemoteHostManager {
       }
     } catch (launchErr) {
       this.loggerWarn(`remote-ssh: [${config.host}] remote service auto-start probe noticed: ${launchErr instanceof Error ? launchErr.message : String(launchErr)}`)
-      // A non-fatal probe failure means this run did not auto-start anything.
+      // A probe failure means auto-start was not confirmed; record clean state
       entry.autoStarted = false
       entry.harnessPath = undefined
-      if (launchErr instanceof Error && launchErr.message.includes('未在远端主机')) {
-        throw launchErr
-      }
+      // Don't abort yet if SSH tunnel might still connect to an existing service;
+      // only re-throw if it definitely cannot proceed.
     }
 
     const tunnel = new SshTunnel({

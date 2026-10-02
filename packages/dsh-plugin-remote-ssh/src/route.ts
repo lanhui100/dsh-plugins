@@ -389,9 +389,10 @@ export function registerRemoteSshRoute(
             ...(result.harnessPath !== undefined ? { harnessPath: result.harnessPath } : {}),
           })
         } catch (err) {
+          const errMsg = err instanceof Error ? err.message : String(err)
           sendJson(res, 500, {
             error: 'add-failed',
-            message: err instanceof Error ? err.message : String(err),
+            message: errMsg || 'Failed to add remote host',
           })
         }
       },
