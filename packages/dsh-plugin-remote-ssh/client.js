@@ -2180,20 +2180,81 @@ window.__ModuleLoader__.load({
             gap: 10px;
           }
           .dsh-remote-host-select {
+            box-sizing: border-box;
             flex: 1;
-            height: 36px;
-            padding: 0 12px;
+            height: 32px;
+            padding: 0 10px;
             border-radius: var(--dsw-radius-md, 8px);
-            border: 1px solid var(--dsw-alias-border-l2, rgba(0, 0, 0, 0.15));
-            background: var(--dsw-alias-bg-layer-3, #ffffff);
+            border: 0.5px solid var(--dsw-alias-border-l3, rgba(0, 0, 0, 0.18));
+            background: var(--dsw-alias-bg-layer-1, #ffffff);
             color: var(--dsw-alias-label-primary, inherit);
             font-family: inherit;
-            font-size: 13px;
+            font-size: 12px;
+            line-height: 1.5;
             outline: none;
             cursor: pointer;
+            transition: border-color 150ms ease, box-shadow 150ms ease;
           }
           .dsh-remote-host-select:focus {
-            border-color: var(--dsw-alias-brand-primary, #2563eb);
+            border-color: var(--dsw-focus-ring-color, var(--dsw-alias-state-business-primary, #2563eb));
+            box-shadow: 0 0 0 1px var(--dsw-focus-ring-color, var(--dsw-alias-state-business-primary, #2563eb));
+          }
+          .dsh-remote-host-input {
+            box-sizing: border-box;
+            flex: 1;
+            height: 32px;
+            padding: 0 10px;
+            border-radius: var(--dsw-radius-md, 8px);
+            border: 0.5px solid var(--dsw-alias-border-l3, rgba(0, 0, 0, 0.18));
+            background: var(--dsw-alias-bg-layer-1, #ffffff);
+            color: var(--dsw-alias-label-primary, inherit);
+            font-family: inherit;
+            font-size: 12px;
+            line-height: 1.5;
+            outline: none;
+            transition: border-color 150ms ease, box-shadow 150ms ease;
+          }
+          .dsh-remote-host-input::placeholder {
+            color: var(--dsw-alias-label-tertiary, #94a3b8);
+          }
+          .dsh-remote-host-input:focus {
+            border-color: var(--dsw-focus-ring-color, var(--dsw-alias-state-business-primary, #2563eb));
+            box-shadow: 0 0 0 1px var(--dsw-focus-ring-color, var(--dsw-alias-state-business-primary, #2563eb));
+          }
+          .dsh-btn-white-outline {
+            box-sizing: border-box;
+            display: inline-flex;
+            align-items: center;
+            justify-content: center;
+            gap: 4px;
+            height: 32px;
+            padding: 0 12px;
+            border-radius: var(--dsw-radius-md, 8px);
+            border: 0.5px solid var(--dsw-alias-border-l3, rgba(0, 0, 0, 0.2));
+            background: var(--dsw-alias-bg-layer-1, #ffffff);
+            color: var(--dsw-alias-label-primary, #1e293b);
+            font-family: inherit;
+            font-size: 12px;
+            font-weight: 500;
+            line-height: 18px;
+            cursor: pointer;
+            white-space: nowrap;
+            transition: background-color 150ms ease, border-color 150ms ease, color 150ms ease;
+          }
+          .dsh-btn-white-outline:hover:not(:disabled) {
+            background: var(--dsw-alias-interactive-bg-hover, rgba(0, 0, 0, 0.04));
+            border-color: var(--dsw-alias-border-l2, rgba(0, 0, 0, 0.28));
+          }
+          .dsh-btn-white-outline:active:not(:disabled) {
+            background: var(--dsw-alias-interactive-bg-active, rgba(0, 0, 0, 0.08));
+          }
+          .dsh-btn-white-outline:focus-visible {
+            outline: var(--dsw-focus-ring-width, 2px) solid var(--dsw-focus-ring-color, var(--dsw-alias-state-business-primary, #2563eb));
+            outline-offset: 1px;
+          }
+          .dsh-btn-white-outline:disabled {
+            cursor: not-allowed;
+            opacity: 0.5;
           }
           .dsh-sc-feedback {
             margin-top: 8px;
@@ -2574,12 +2635,10 @@ window.__ModuleLoader__.load({
 
       const dirSelect = document.createElement('select')
       dirSelect.className = 'dsh-remote-host-select'
-      dirSelect.style.height = '30px'
-      dirSelect.style.fontSize = '12px'
       dirSelect.style.width = '100%'
 
       const updateDirOptions = async () => {
-        dirSelect.innerHTML = '<option value="">正在读取 ~/ 目录...</option>'
+        dirSelect.innerHTML = '<option value="">正在读取目录列表...</option>'
         try {
           const res = await fetch(REMOTE_WORKSPACES_ROUTE)
           const wsData = await parseJsonResponse(res)
@@ -2588,12 +2647,14 @@ window.__ModuleLoader__.load({
             ? wsData.workspaces.filter((w) => w.host.toLowerCase() === host.toLowerCase())
             : []
           if (dirs.length === 0) {
-            dirSelect.innerHTML = '<option value="">~/ 下无目录</option>'
+            dirSelect.innerHTML = '<option value="">无现有文件夹</option>'
           } else {
             for (const d of dirs) {
               const opt = document.createElement('option')
               opt.value = d.name
-              opt.textContent = `~/${d.name}`
+              // Clean name: strip any leading ~/ or ~ path prefix to show plain directory name
+              const displayName = d.name.replace(/^~[/\\]+/, '')
+              opt.textContent = displayName
               dirSelect.appendChild(opt)
             }
           }
@@ -2611,18 +2672,11 @@ window.__ModuleLoader__.load({
 
       const nameInput = document.createElement('input')
       nameInput.type = 'text'
-      nameInput.placeholder = '或输入新建目录名 (~/xxx)'
-      nameInput.className = 'dsh-remote-host-select'
-      nameInput.style.height = '30px'
-      nameInput.style.fontSize = '12px'
-      nameInput.style.flex = '1'
-      nameInput.style.padding = '0 8px'
+      nameInput.placeholder = '或输入新建目录名'
+      nameInput.className = 'dsh-remote-host-input'
 
       const createBtn = document.createElement('button')
-      createBtn.className = 'dsw-button dsw-button--primary'
-      createBtn.style.height = '30px'
-      createBtn.style.padding = '0 10px'
-      createBtn.style.fontSize = '12px'
+      createBtn.className = 'dsh-btn-white-outline'
       createBtn.textContent = '添加/新建'
 
       inputRow.appendChild(nameInput)
@@ -2634,8 +2688,8 @@ window.__ModuleLoader__.load({
       wsForm.appendChild(wsFeedback)
 
       createBtn.addEventListener('click', async () => {
-        const customName = nameInput.value.trim()
-        const selectedDir = dirSelect.value
+        const customName = nameInput.value.trim().replace(/^~[/\\]+/, '')
+        const selectedDir = dirSelect.value ? dirSelect.value.replace(/^~[/\\]+/, '') : ''
         const targetName = customName || selectedDir
         if (!targetName) {
           wsFeedback.className = 'dsh-popover-feedback dsh-feedback-error'
