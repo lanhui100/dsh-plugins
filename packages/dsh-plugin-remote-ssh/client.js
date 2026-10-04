@@ -1703,7 +1703,7 @@ window.__ModuleLoader__.load({
             justify-content: center;
             align-items: center;
             display: inline-flex;
-            color: var(--dsw-alias-label-secondary, #64748b);
+            color: var(--dsw-alias-label-primary, inherit);
           }
           .dsh-panel-row-title {
             text-overflow: ellipsis;
