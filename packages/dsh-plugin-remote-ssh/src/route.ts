@@ -155,9 +155,18 @@ export function registerRemoteSshRoute(
       if (res) return res
     }
     const caller = typeof managerOrGetCaller === 'function' ? managerOrGetCaller() : undefined
+    // Legacy single-caller fallback mirrors the manager's namespace decoding so a
+    // `remote:<host>:<encodedId>` session id still resolves to the remote id.
+    let originalSessionId = rawSessionId
+    if (rawSessionId.startsWith(`${REMOTE_SOURCE_KIND}:`)) {
+      const parts = rawSessionId.split(':')
+      if (parts.length >= 3) {
+        originalSessionId = parts.slice(2).map(decodeURIComponent).join(':')
+      }
+    }
     return {
       host: hostLabel || 'remote',
-      originalSessionId: rawSessionId,
+      originalSessionId,
       caller,
     }
   }
@@ -921,9 +930,21 @@ export function registerRemoteSshRoute(
             }
           }
 
+          // The official UI reuses an existing blank session by passing its id
+          // (see uiWorkspace.reuseOrCreateBlank). For remote rows that id is the
+          // namespaced form (`remote:<host>:<encodedId>`); forwarding it verbatim
+          // makes the remote create a NEW session bearing the namespaced string as
+          // its real id, duplicating the blank original on every click. Resolve it
+          // back to the remote's own id (same decode `resolveTarget` applies to
+          // page/prompt/cancel/rename) so reuse genuinely adopts the blank session.
+          const rawSessionId = typeof body.sessionId === 'string' ? body.sessionId.trim() : undefined
+          const forwardedSessionId = rawSessionId !== undefined && rawSessionId !== ''
+            ? resolveTarget(rawSessionId).originalSessionId
+            : undefined
+          const sessionIdField = forwardedSessionId === undefined ? {} : { sessionId: forwardedSessionId }
           const request = targetWsId !== undefined
-            ? { workspaceId: targetWsId, ...(body.sessionId ? { sessionId: String(body.sessionId) } : {}) }
-            : { cwd: targetCwd ?? '', ...(body.sessionId ? { sessionId: String(body.sessionId) } : {}) }
+            ? { workspaceId: targetWsId, ...sessionIdField }
+            : { cwd: targetCwd ?? '', ...sessionIdField }
 
           const result = await caller.invoke<{ sessionId: string; agentPreset?: string }>(
             'session/create',

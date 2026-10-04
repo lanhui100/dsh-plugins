@@ -23,7 +23,7 @@ globalThis.window = {
 }
 
 const requestedUrls = []
-globalThis.fetch = async (url) => {
+globalThis.fetch = async (url, opts) => {
   const urlStr = String(url)
   requestedUrls.push(urlStr)
   if (urlStr.includes('/remote-ssh/sessions')) {
@@ -94,10 +94,19 @@ globalThis.fetch = async (url) => {
     }
   }
   if (urlStr.includes('/remote-ssh/create')) {
+    // Reuse path (official UI passes an existing blank sessionId): the remote
+    // adopts the blank and returns its id; a fresh create returns a new id.
+    let body = {}
+    try {
+      body = opts && typeof opts.body === 'string' ? JSON.parse(opts.body) : {}
+    } catch {
+      body = {}
+    }
+    const sessionId = typeof body.sessionId === 'string' && body.sessionId !== '' ? 'session-demo-1' : 'session-remote-new-1'
     return {
       ok: true,
       status: 200,
-      json: async () => ({ ok: true, value: { sessionId: 'session-remote-new-1', agentPreset: 'standard' } }),
+      json: async () => ({ ok: true, value: { sessionId, agentPreset: 'standard' } }),
     }
   }
   if (urlStr.includes('/remote-ssh/pending-interaction')) {
@@ -540,6 +549,27 @@ assert.ok(newSessionPage.ok, 'Newly created remote session must route to remote 
 // Local branch: create passes through to original getter
 const localCreate = await pluginCtx.remote.session.create({ workspaceId: 'local-workspace-1' })
 assert.equal(localCreate.value?.method, 'create', 'Local create must pass through')
+
+// Reuse path: the official UI reuses a blank remote session by passing its id.
+// The remote adopts the EXISTING blank (returning the same id); the workspace
+// view must NOT prepend a duplicate row (the reuse-adopt would otherwise show
+// a copy of the original session in the tree).
+const wsBeforeReuse = upserted.filter((v) => v.workspaceId === 'remote:/tmp/demo').at(-1)
+assert.ok(
+  (wsBeforeReuse?.sessionIds || []).includes('session-demo-1'),
+  'Workspace must already list the blank session before reuse create',
+)
+const reuseCreate = await pluginCtx.remote.session.create({
+  workspaceId: 'remote:/tmp/demo',
+  sessionId: 'session-demo-1',
+})
+assert.ok(reuseCreate.ok, 'Reuse create must succeed')
+assert.equal(reuseCreate.value?.sessionId, 'session-demo-1', 'Reuse create must return the adopted blank id')
+const wsAfterReuse = upserted.filter((v) => v.workspaceId === 'remote:/tmp/demo').at(-1)
+const occurrences = (wsAfterReuse?.sessionIds || []).filter((id) => id === 'session-demo-1').length
+assert.equal(occurrences, 1, 'Workspace sessionIds must not duplicate a reused blank session id')
+// The fresh create earlier added session-remote-new-1; reuse must not add a third row.
+assert.equal((wsAfterReuse?.sessionIds || []).length, 2, 'Reuse create must not grow the workspace session list')
 
 // Clear status updates to isolate follow assertions
 sessionStatusUpdates.length = 0

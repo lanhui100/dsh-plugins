@@ -954,9 +954,11 @@ window.__ModuleLoader__.load({
               remoteSessionIds.add(newSessionId)
               if (workspaceId && ctx.workspaces && ctx.workspaces.list && typeof ctx.workspaces.list.upsertView === 'function') {
                 if (wsItem) {
+                  // Reuse-adopt may return a sessionId already listed (the reused blank):
+                  // never prepend a duplicate row, or the tree shows a copy of the session.
                   ctx.workspaces.list.upsertView({
                     ...wsItem,
-                    sessionIds: [newSessionId, ...(wsItem.sessionIds || [])],
+                    sessionIds: [newSessionId, ...(wsItem.sessionIds || []).filter((id) => id !== newSessionId)],
                   })
                 }
               }
