@@ -222,6 +222,12 @@ export function installWorkspaceGuardian(ctx: Context): () => void {
 
 /**
  * Sync the remote snapshot into the official workspace/session client models.
+ *
+ * Performance contract (mirrors `client.js`): the Host snapshot is fanned out
+ * only when the snapshot fingerprint changed — an unchanged poll result is
+ * dropped before any model write, so a long-idle client never re-renders the
+ * sidebar tree. DOM decorations are additionally coalesced to one pass per
+ * animation frame by the title decorator.
  * @param ctx - client plugin context.
  */
 export function reconcileRemoteSource(ctx: Context): Promise<void> {

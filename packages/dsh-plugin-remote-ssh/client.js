@@ -209,6 +209,36 @@ window.__ModuleLoader__.load({
     /** Cached synthetic remote workspace views to survive baseline resets. */
     let cachedWorkspaceViews = []
 
+    /**
+     * Dirty-check fingerprint of the remote snapshot. The 60s poll only fans
+     * the snapshot out into the official models when something actually
+     * changed; an unchanged snapshot skips the upsert fan-out entirely, so a
+     * long-idle client stops re-rendering the whole sidebar tree every minute.
+     */
+    let lastSnapshotFingerprint = null
+
+    function snapshotFingerprint(body) {
+      const stable = {
+        w: (body.workspaces || []).map((ws) => ({
+          i: ws.workspaceId || ws.cwd,
+          c: ws.cwd,
+          n: ws.name,
+          s: (ws.sessions || []).map((s) => (s && s.sessionId) || '').join(','),
+        })),
+        s: (body.sessions || []).map((s) => ({
+          i: s.sessionId,
+          r: Boolean(s.running),
+          a: s.updatedAt,
+          t: typeof s.title === 'string' ? s.title : '',
+          p: Boolean(s.pendingInteraction),
+        })),
+        arch: (body.archivedSessionIds || []).map(String).slice().sort().join(','),
+        pin: (body.pinnedSessionIds || []).map(String).slice().sort().join(','),
+        homes: (body.homes || []).map((h) => `${h && h.host}|${h && h.home}`).join(','),
+      }
+      return JSON.stringify(stable)
+    }
+
     function reapplyRemoteWorkspaces(ctx) {
       const workspaces = ctx.workspaces && ctx.workspaces.list
       if (!workspaces || typeof workspaces.upsertView !== 'function') return
@@ -394,6 +424,15 @@ window.__ModuleLoader__.load({
       if (!response.ok) return
       const body = await response.json().catch(() => null)
       if (!body || !Array.isArray(body.workspaces)) return
+
+      // Dirty-check: when the remote snapshot is unchanged, skip the whole
+      // model fan-out (upsertView / handleSessionAdded / archived+pinned
+      // sync). Previously every 60s poll unconditionally re-upserted every
+      // remote workspace and session, forcing the host model to re-render the
+      // whole sidebar tree even when nothing changed.
+      const fingerprint = snapshotFingerprint(body)
+      if (fingerprint === lastSnapshotFingerprint) return
+      lastSnapshotFingerprint = fingerprint
 
       const sessions = ctx.sessions
       const workspaces = ctx.workspaces && ctx.workspaces.list
@@ -2567,9 +2606,22 @@ window.__ModuleLoader__.load({
       return document.querySelector('.WorkspaceBrowser_searchSlot') || null
     }
 
+    /**
+     * Cached sidebar panel list. The decoration observer runs once per frame,
+     * so caching the panel list avoids re-running a document-wide `querySelector`
+     * (~60x/s) whenever the DOM is idle; the cache self-invalidates when React
+     * replaces the panel node (detached -> isConnected false).
+     */
+    let cachedSidebarPanelList = null
+
     function findSidebarPanelList() {
       if (typeof document === 'undefined') return null
-      return document.querySelector('nav[class*="panelList"]') || null
+      if (cachedSidebarPanelList !== null && cachedSidebarPanelList.isConnected === false) {
+        cachedSidebarPanelList = null
+      }
+      if (cachedSidebarPanelList !== null) return cachedSidebarPanelList
+      cachedSidebarPanelList = document.querySelector('nav[class*="panelList"]') || null
+      return cachedSidebarPanelList
     }
 
     function findWorkspaceHeaderActions() {
@@ -2629,6 +2681,7 @@ window.__ModuleLoader__.load({
       if (btn) {
         if (typeof btn._dshTooltipDisposer === 'function') {
           try { btn._dshTooltipDisposer() } catch {}
+          btn._dshTooltipDisposer = null
         }
         btn.remove()
       }
@@ -3257,6 +3310,13 @@ window.__ModuleLoader__.load({
         // stale node and re-create it below; otherwise only re-pin the position
         // when it drifted (wide <-> rail toggles) — never fight every mutation.
         if (typeof existingBtn.isConnected === 'boolean' && !existingBtn.isConnected) {
+          // Release the tooltip timers/listeners BEFORE dropping the stale node:
+          // a detached node keeps its closures alive as long as the scheduled
+          // tooltip timeout references it, so never let that reference survive.
+          if (typeof existingBtn._dshTooltipDisposer === 'function') {
+            try { existingBtn._dshTooltipDisposer() } catch {}
+            existingBtn._dshTooltipDisposer = null
+          }
           try { existingBtn.remove() } catch {}
         } else {
           repositionWorkspaceAddButton(existingBtn)
@@ -3287,19 +3347,45 @@ window.__ModuleLoader__.load({
 
     function installTitleDecorator(ctx) {
       if (typeof document === 'undefined' || typeof MutationObserver === 'undefined') return () => {}
-      decorateHostRoots()
-      checkAndRenderActiveQuestion()
-      checkAndRenderSettingsCard(ctx)
-      checkAndRenderWorkspaceAddButton(ctx)
-      const observer = new MutationObserver(() => {
+
+      /**
+       * Coalesce decoration work to one pass per animation frame. The observer
+       * watches the whole body (React may recreate any container), and during a
+       * streaming turn that fires hundreds of mutations per second; running the
+       * four DOM scans synchronously per mutation pinned the main thread
+       * (Layout Thrashing) and made a long-lived page progressively stutter.
+       */
+      const raf = typeof requestAnimationFrame === 'function' ? requestAnimationFrame : null
+      const caf = typeof cancelAnimationFrame === 'function' ? cancelAnimationFrame : null
+      let scheduledHandle = null
+
+      const runDecorations = () => {
+        scheduledHandle = null
         decorateHostRoots()
         checkAndRenderActiveQuestion()
         checkAndRenderSettingsCard(ctx)
         checkAndRenderWorkspaceAddButton(ctx)
-      })
+      }
+
+      const scheduleDecorations = () => {
+        if (scheduledHandle !== null) return
+        if (raf !== null) scheduledHandle = raf(runDecorations)
+        else scheduledHandle = setTimeout(runDecorations, 0)
+      }
+
+      // Initial synchronous pass: first paint renders decorations immediately,
+      // and test doubles whose observer never fires still exercise this path.
+      runDecorations()
+
+      const observer = new MutationObserver(scheduleDecorations)
       observer.observe(document.body, { childList: true, subtree: true })
       return () => {
         observer.disconnect()
+        if (scheduledHandle !== null) {
+          if (raf !== null && caf !== null) caf(scheduledHandle)
+          else clearTimeout(scheduledHandle)
+          scheduledHandle = null
+        }
         const decorated = document.querySelectorAll('div[data-row-key$=":hostroot"] span[class*="title"]')
         for (const el of decorated) {
           el.removeAttribute('title')
@@ -3317,6 +3403,11 @@ window.__ModuleLoader__.load({
      * @param ctx - client plugin context with the injected service edges.
      */
     function apply(ctx) {
+      // Every activation must fan out its first snapshot, even if the poll
+      // dirty-check fingerprint was left over from an earlier activation (test
+      // hosts several forks against one factory closure; the real client
+      // activates once per page load, where this reset is a no-op).
+      lastSnapshotFingerprint = null
       ensureWorkspaceTreeMode(ctx)
       const restoreProxy = installSessionProxy(ctx)
       const restoreGuardian = installWorkspaceGuardian(ctx)
