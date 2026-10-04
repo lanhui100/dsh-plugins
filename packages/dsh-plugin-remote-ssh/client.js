@@ -46,6 +46,7 @@ window.__ModuleLoader__.load({
     const REMOVE_HOST_ROUTE = '/remote-ssh/remove-host'
     const REMOTE_WORKSPACES_ROUTE = '/remote-ssh/workspaces'
     const ADD_WORKSPACE_ROUTE = '/remote-ssh/add-workspace'
+    const WORKSPACE_DELETE_ROUTE = '/remote-ssh/workspace-delete'
     /** Refresh the remote workspace/session projection this often (ms). */
     const POLL_INTERVAL_MS = 60_000
 
@@ -163,6 +164,8 @@ window.__ModuleLoader__.load({
     let injectedWorkspaceIds = new Set()
     /** Map of child subagent session id -> parent session id. */
     const sessionParents = new Map()
+    /** Map of raw session id -> namespaced remote session id. */
+    const rawToNamespaced = new Map()
     /** Active pending interaction per sessionId. Map<sessionId, PendingRemoteInteraction> */
     const activeInteractions = new Map()
     /** Disposers for uiSession pending interaction registrations. Map<eventId, () => void> */
@@ -173,20 +176,32 @@ window.__ModuleLoader__.load({
     /** Resolve target session id and parent id from an official `ctx.remote.session.*` request argument list. */
     function sessionTargetOfRequest(args) {
       const req = args && args[0]
+      let id, parentId
       if (typeof req === 'string') {
-        const id = req
-        const parentId = typeof args[1] === 'string' ? args[1] : sessionParents.get(id)
-        return { id, parentId }
+        id = req
+        parentId = typeof args[1] === 'string' ? args[1] : sessionParents.get(id)
+      } else if (req && typeof req === 'object') {
+        const address = req.address
+        if (address && typeof address === 'object') {
+          if (address.kind === 'session' && address.sessionId) {
+            id = address.sessionId
+          } else if (address.childSessionId) {
+            id = address.childSessionId
+            parentId = address.parentSessionId
+          } else if (address.sessionId) {
+            id = address.sessionId
+          }
+        } else {
+          id = req.sessionId || req.childSessionId || undefined
+          parentId = req.parentSessionId
+        }
       }
-      if (!req || typeof req !== 'object') return { id: undefined, parentId: undefined }
-      const address = req.address
-      if (address && typeof address === 'object') {
-        if (address.kind === 'session' && address.sessionId) return { id: address.sessionId, parentId: undefined }
-        if (address.childSessionId) return { id: address.childSessionId, parentId: address.parentSessionId }
-        if (address.sessionId) return { id: address.sessionId, parentId: undefined }
+      if (id !== undefined && !isNamespacedRemoteId(id) && rawToNamespaced.has(id)) {
+        id = rawToNamespaced.get(id)
       }
-      const id = req.sessionId || req.childSessionId || undefined
-      const parentId = req.parentSessionId || (id !== undefined ? sessionParents.get(id) : undefined)
+      if (id !== undefined && !parentId) {
+        parentId = sessionParents.get(id)
+      }
       return { id, parentId }
     }
 
@@ -452,9 +467,28 @@ window.__ModuleLoader__.load({
 
       const allSessions = Array.isArray(body.sessions) ? body.sessions : []
       sessionParents.clear()
+      rawToNamespaced.clear()
       for (const s of allSessions) {
+        if (s && s.sessionId) {
+          const sid = String(s.sessionId)
+          if (isNamespacedRemoteId(sid)) {
+            const raw = sid.split(':').slice(2).map(decodeURIComponent).join(':')
+            rawToNamespaced.set(raw, sid)
+          }
+        }
         if (s && s.sessionId && s.parentSessionId) {
-          sessionParents.set(String(s.sessionId), String(s.parentSessionId))
+          const child = String(s.sessionId)
+          const parent = String(s.parentSessionId)
+          sessionParents.set(child, parent)
+          if (isNamespacedRemoteId(child)) {
+            const rawChild = child.split(':').slice(2).map(decodeURIComponent).join(':')
+            sessionParents.set(rawChild, parent)
+            if (isNamespacedRemoteId(parent)) {
+              const rawParent = parent.split(':').slice(2).map(decodeURIComponent).join(':')
+              sessionParents.set(child, rawParent)
+              sessionParents.set(rawChild, rawParent)
+            }
+          }
         }
       }
 
@@ -631,7 +665,7 @@ window.__ModuleLoader__.load({
         const desc = saved.get(method)
         return desc ? desc.get.call(ns)(...args) : undefined
       }
-      const isRemote = (id) => id !== undefined && remoteSessionIds.has(id)
+      const isRemote = (id) => id !== undefined && (remoteSessionIds.has(id) || isNamespacedRemoteId(id) || rawToNamespaced.has(id))
 
       async function remoteFetchRaw(id, signal, parentId) {
         const resolvedParent = parentId || sessionParents.get(id)
@@ -954,6 +988,7 @@ window.__ModuleLoader__.load({
             if (data && typeof data === 'object' && data.ok && data.value && data.value.sessionId) {
               const newSessionId = data.value.sessionId
               remoteSessionIds.add(newSessionId)
+              rawToNamespaced.set(newSessionId, newSessionId)
               if (workspaceId && ctx.workspaces && ctx.workspaces.list && typeof ctx.workspaces.list.upsertView === 'function') {
                 if (wsItem) {
                   // Reuse-adopt may return a sessionId already listed (the reused blank):
@@ -1041,7 +1076,7 @@ window.__ModuleLoader__.load({
       try {
         const wsNs = ctx.remote && ctx.remote.workspace
         if (wsNs) {
-          const wsMethods = ['archiveSession', 'unarchiveSession', 'pinSession', 'unpinSession']
+          const wsMethods = ['archiveSession', 'unarchiveSession', 'pinSession', 'unpinSession', 'delete']
           const savedWs = new Map()
           for (const method of wsMethods) {
             const desc = Object.getOwnPropertyDescriptor(wsNs, method)
@@ -1157,6 +1192,34 @@ window.__ModuleLoader__.load({
                   return { ok: true, value: { pinnedSessionIds: mergedPinned } }
                 }
                 return { ok: false, error: new Error(data?.error?.message || `HTTP ${res.status}`) }
+              } catch (error) {
+                return { ok: false, error: error instanceof Error ? error : new Error(String(error)) }
+              }
+            },
+            delete: async (...args) => {
+              const req = (args && typeof args[0] === 'object' && args[0] !== null) ? args[0] : {}
+              const wid = String(req.workspaceId || '')
+              if (!isRemoteStateId(wid)) return origWsCall('delete', args)
+
+              try {
+                const res = await fetch(WORKSPACE_DELETE_ROUTE, {
+                  method: 'POST',
+                  headers: { 'content-type': 'application/json', accept: 'application/json' },
+                  body: JSON.stringify({ workspaceId: wid }),
+                })
+                const data = await res.json().catch(() => null)
+                if (data && data.ok) {
+                  const workspaces = ctx.workspaces && ctx.workspaces.list
+                  if (workspaces && typeof workspaces.removeView === 'function') {
+                    workspaces.removeView(wid)
+                  }
+                  injectedWorkspaceIds.delete(wid)
+                  lastSnapshotFingerprint = null
+                  void reconcileRemoteSource(ctx)
+                  return { ok: true, value: { deleted: true } }
+                }
+                const msg = data?.message || data?.error?.message || `HTTP ${res.status}`
+                return { ok: false, error: new Error(msg) }
               } catch (error) {
                 return { ok: false, error: error instanceof Error ? error : new Error(String(error)) }
               }
@@ -2744,7 +2807,10 @@ window.__ModuleLoader__.load({
           }
 
           showRemoteToast(`工作区 ${selectedDir} 添加成功`)
-          if (ctx) void reconcileRemoteSource(ctx)
+          if (ctx) {
+            lastSnapshotFingerprint = null
+            void reconcileRemoteSource(ctx)
+          }
           setTimeout(() => {
             cleanup()
           }, 700)
@@ -2785,7 +2851,10 @@ window.__ModuleLoader__.load({
           }
 
           showRemoteToast(`工作区 ${customName} 新建成功`)
-          if (ctx) void reconcileRemoteSource(ctx)
+          if (ctx) {
+            lastSnapshotFingerprint = null
+            void reconcileRemoteSource(ctx)
+          }
           setTimeout(() => {
             cleanup()
           }, 700)

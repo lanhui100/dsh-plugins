@@ -2,7 +2,7 @@
 
 import type { Context } from '@deepseek-ai/cordis'
 import type { RemoteCaller } from './remote.ts'
-import { groupSessionsByWorkspace, listRemoteSessions } from './sessions.ts'
+import { groupSessionsByWorkspace, listRemoteSessions, type RemoteSessionItem } from './sessions.ts'
 import { projectRemoteSourceSnapshot, namespaceRemoteId, namespaceRemoteWorkspaceId, REMOTE_SOURCE_KIND } from './source.ts'
 import { getRemoteSessionDetail } from './session-detail.ts'
 import { RemoteHostManager } from './manager.ts'
@@ -73,6 +73,9 @@ export const REMOTE_WORKSPACES_ROUTE = '/remote-ssh/workspaces'
 
 /** Absolute pathname for creating a remote user's home directory workspace. */
 export const ADD_WORKSPACE_ROUTE = '/remote-ssh/add-workspace'
+
+/** Absolute pathname for deleting a remote workspace. */
+export const WORKSPACE_DELETE_ROUTE = '/remote-ssh/workspace-delete'
 
 
 export interface WebServerLike {
@@ -218,18 +221,24 @@ export function registerRemoteSshRoute(
             return
           }
 
+          // Clean and normalize path: trim and remove trailing slashes
+          targetPath = targetPath.replace(/[/\\]+$/, '')
+
           // Expand ~ or resolve relative paths to absolute remote home path
           if (targetPath.startsWith('~')) {
             const home = await manager.getHomeDirectory(host).catch(() => '')
             if (home) {
-              targetPath = targetPath === '~' ? home : `${home}/${targetPath.replace(/^~[/\\]+/, '')}`
+              const cleanHome = home.replace(/[/\\]+$/, '')
+              targetPath = targetPath === '~' ? cleanHome : `${cleanHome}/${targetPath.replace(/^~[/\\]+/, '')}`
             }
           }
 
           // Register workspace in remote DSH
           const wsRes = await caller.createWorkspace(targetPath)
           // Also create an initial session in this workspace so it immediately has sessions
-          await caller.invoke('session/create', { request: { workspaceId: wsRes.workspaceId } }).catch(() => undefined)
+          await caller.invoke('session/create', { request: { workspaceId: wsRes.workspaceId } }).catch((err) => {
+            console.warn(`remote-ssh: [${host}] initial session creation failed for workspace ${wsRes.workspaceId}:`, err)
+          })
           sendJson(res, 200, { ok: true, host, path: targetPath, workspace: wsRes })
         } catch (error) {
           sendJson(res, 400, { error: 'register-failed', message: error instanceof Error ? error.message : String(error) })
@@ -262,14 +271,87 @@ export function registerRemoteSshRoute(
           // Also create an initial session in this new workspace so it immediately surfaces
           const caller = manager.getCallerForHost(host)
           if (caller) {
-            await caller.invoke('session/create', { request: { cwd: result.path } }).catch(() => undefined)
+            const createReq = result.workspace?.workspaceId
+              ? { workspaceId: result.workspace.workspaceId }
+              : { cwd: result.path }
+            await caller.invoke('session/create', { request: createReq }).catch((err) => {
+              console.warn(`remote-ssh: [${host}] initial session creation failed:`, err)
+            })
           }
-          sendJson(res, 200, { ok: true, host, name: result.name, path: result.path })
+          sendJson(res, 200, { ok: true, host, name: result.name, path: result.path, workspace: result.workspace })
         } catch (error) {
           sendJson(res, 400, { error: 'create-failed', message: error instanceof Error ? error.message : String(error) })
         }
       },
     }), 'remote-ssh: add workspace route')
+
+    scoped.effect(() => scoped.webServer.register({
+      kind: 'exact',
+      path: WORKSPACE_DELETE_ROUTE,
+      handler: async (req, res) => {
+        try {
+          const body = await readJsonBody(req)
+          const rawWorkspaceId = typeof body.workspaceId === 'string' ? body.workspaceId.trim() : ''
+          if (!rawWorkspaceId) {
+            sendJson(res, 400, { error: 'missing-fields', message: 'Field "workspaceId" is required.' })
+            return
+          }
+
+          let host = hostLabel || 'remote'
+          let targetCwd: string | undefined
+          let targetWsId: string | undefined
+
+          if (rawWorkspaceId.startsWith(`${REMOTE_SOURCE_KIND}:`)) {
+            const parts = rawWorkspaceId.split(':')
+            if (parts.length >= 3) {
+              host = decodeURIComponent(parts[1])
+              const rest = parts.slice(2).map(decodeURIComponent).join(':')
+              if (rest.startsWith('workspace:')) {
+                targetCwd = rest.slice('workspace:'.length)
+              } else {
+                targetWsId = rest
+              }
+            }
+          } else if (rawWorkspaceId.startsWith('workspace:')) {
+            targetCwd = rawWorkspaceId.slice('workspace:'.length)
+          } else {
+            targetWsId = rawWorkspaceId
+          }
+
+          const caller = isManager
+            ? (managerOrGetCaller as RemoteHostManager).getCallerForHost(host)
+            : (typeof managerOrGetCaller === 'function' ? managerOrGetCaller() : undefined)
+
+          if (!caller) {
+            sendJson(res, 503, { error: 'tunnel-not-ready', message: `Host "${host}" is not ready.` })
+            return
+          }
+
+          // If targetWsId was not a UUID, or we only have targetCwd, resolve actual remote UUID
+          let resolvedWsId = targetWsId
+          if (!resolvedWsId && targetCwd) {
+            resolvedWsId = pathToRemoteWorkspaceId.get(`${host}:${targetCwd}`) || pathToRemoteWorkspaceId.get(targetCwd)
+            if (!resolvedWsId) {
+              const baseline = await caller.fetchWorkspaceBaseline().catch(() => undefined)
+              if (baseline) {
+                const found = baseline.items.find((it) => it.path === targetCwd)
+                if (found) resolvedWsId = found.workspaceId
+              }
+            }
+          }
+
+          if (!resolvedWsId) {
+            sendJson(res, 404, { error: 'workspace/not-found', message: `Workspace "${rawWorkspaceId}" not found on host "${host}".` })
+            return
+          }
+
+          await caller.deleteWorkspace(resolvedWsId)
+          sendJson(res, 200, { ok: true, value: { deleted: true } })
+        } catch (error) {
+          sendJson(res, 400, { error: 'delete-failed', message: error instanceof Error ? error.message : String(error) })
+        }
+      },
+    }), 'remote-ssh: workspace delete route')
     scoped.effect(() => scoped.webServer.register({
       kind: 'exact',
       path: SESSIONS_ROUTE,
@@ -316,9 +398,39 @@ export function registerRemoteSshRoute(
 
               for (const it of items) {
                 if (it.origin === 'subagent' && it.parentSessionId) {
-                  subagentParents.set(namespaceRemoteId(host, it.sessionId), namespaceRemoteId(host, it.parentSessionId))
+                  const nsChild = namespaceRemoteId(host, it.sessionId)
+                  const nsParent = namespaceRemoteId(host, it.parentSessionId)
+                  subagentParents.set(nsChild, nsParent)
                   subagentParents.set(it.sessionId, it.parentSessionId)
+                  subagentParents.set(nsChild, it.parentSessionId)
+                  subagentParents.set(it.sessionId, nsParent)
                 }
+              }
+
+              function namespaceCatalogAndTeam(proj: RemoteSessionItem['projections'], h: string): RemoteSessionItem['projections'] {
+                if (!proj?.values) return proj
+                const vals = { ...proj.values }
+                if (Array.isArray(vals.subagentCatalog)) {
+                  vals.subagentCatalog = vals.subagentCatalog.map((item: Record<string, unknown>) => {
+                    if (item && typeof item.id === 'string' && !item.id.startsWith('remote:')) {
+                      return { ...item, id: namespaceRemoteId(h, item.id) }
+                    }
+                    return item
+                  })
+                }
+                if (vals.agentTeam && typeof vals.agentTeam === 'object') {
+                  const team = { ...(vals.agentTeam as Record<string, unknown>) }
+                  if (Array.isArray(team.members)) {
+                    team.members = team.members.map((m: Record<string, unknown>) => {
+                      if (m && typeof m.id === 'string' && !m.id.startsWith('remote:')) {
+                        return { ...m, id: namespaceRemoteId(h, m.id) }
+                      }
+                      return m
+                    })
+                  }
+                  vals.agentTeam = team
+                }
+                return { ...proj, values: vals }
               }
 
               const namespacedWorkspaces = workspaceGroups.map((ws) => ({
@@ -330,6 +442,8 @@ export function registerRemoteSshRoute(
                   return {
                     ...s,
                     sessionId: namespaceRemoteId(host, s.sessionId),
+                    parentSessionId: s.parentSessionId ? namespaceRemoteId(host, s.parentSessionId) : undefined,
+                    projections: namespaceCatalogAndTeam(s.projections, host),
                     pendingInteraction: pending.length > 0
                       ? (pending[0]?.event === 'user-questions/request' ? 'question' : true)
                       : false,
@@ -345,6 +459,8 @@ export function registerRemoteSshRoute(
                 return {
                   ...it,
                   sessionId: namespaceRemoteId(host, it.sessionId),
+                  parentSessionId: it.parentSessionId ? namespaceRemoteId(host, it.parentSessionId) : undefined,
+                  projections: namespaceCatalogAndTeam(it.projections, host),
                   pendingInteraction: pending.length > 0
                     ? (pending[0]?.event === 'user-questions/request' ? 'question' : true)
                     : false,
@@ -423,29 +539,74 @@ export function registerRemoteSshRoute(
           const pinnedSessionIds = baseline?.pinnedSessionIds ?? []
           const source = projectRemoteSourceSnapshot(hostLabel || 'remote', items)
 
+          const host = hostLabel || 'remote'
+          function namespaceCatalogAndTeam(proj: RemoteSessionItem['projections'], h: string): RemoteSessionItem['projections'] {
+            if (!proj?.values) return proj
+            const vals = { ...proj.values }
+            if (Array.isArray(vals.subagentCatalog)) {
+              vals.subagentCatalog = vals.subagentCatalog.map((item: Record<string, unknown>) => {
+                if (item && typeof item.id === 'string' && !item.id.startsWith('remote:')) {
+                  return { ...item, id: namespaceRemoteId(h, item.id) }
+                }
+                return item
+              })
+            }
+            if (vals.agentTeam && typeof vals.agentTeam === 'object') {
+              const team = { ...(vals.agentTeam as Record<string, unknown>) }
+              if (Array.isArray(team.members)) {
+                team.members = team.members.map((m: Record<string, unknown>) => {
+                  if (m && typeof m.id === 'string' && !m.id.startsWith('remote:')) {
+                    return { ...m, id: namespaceRemoteId(h, m.id) }
+                  }
+                  return m
+                })
+              }
+              vals.agentTeam = team
+            }
+            return { ...proj, values: vals }
+          }
+
           const validSessions = (validMap !== undefined
             ? items.filter((it) => validMap.has(it.cwd))
             : items
           ).map((it) => {
             const pending = caller.getPendingInteractionsForSession(it.sessionId)
-            return pending.length > 0
-              ? { ...it, pendingInteraction: pending[0]?.event === 'user-questions/request' ? 'question' : true }
-              : it
+            return {
+              ...it,
+              sessionId: namespaceRemoteId(host, it.sessionId),
+              parentSessionId: it.parentSessionId ? namespaceRemoteId(host, it.parentSessionId) : undefined,
+              projections: namespaceCatalogAndTeam(it.projections, host),
+              pendingInteraction: pending.length > 0
+                ? (pending[0]?.event === 'user-questions/request' ? 'question' : true)
+                : false,
+            }
           })
 
           const workspaces = workspaceGroups.map((ws) => ({
             ...ws,
             sessions: ws.sessions.map((it) => {
               const pending = caller.getPendingInteractionsForSession(it.sessionId)
-              return pending.length > 0
-                ? { ...it, pendingInteraction: pending[0]?.event === 'user-questions/request' ? 'question' : true }
-                : it
+              return {
+                ...it,
+                sessionId: namespaceRemoteId(host, it.sessionId),
+                parentSessionId: it.parentSessionId ? namespaceRemoteId(host, it.parentSessionId) : undefined,
+                projections: namespaceCatalogAndTeam(it.projections, host),
+                pendingInteraction: pending.length > 0
+                  ? (pending[0]?.event === 'user-questions/request' ? 'question' : true)
+                  : false,
+              }
             }),
           }))
 
           for (const it of items) {
             if (it.origin === 'subagent' && it.parentSessionId) {
+              const host = hostLabel || 'remote'
+              const nsChild = namespaceRemoteId(host, it.sessionId)
+              const nsParent = namespaceRemoteId(host, it.parentSessionId)
+              subagentParents.set(nsChild, nsParent)
               subagentParents.set(it.sessionId, it.parentSessionId)
+              subagentParents.set(nsChild, it.parentSessionId)
+              subagentParents.set(it.sessionId, nsParent)
             }
           }
 
@@ -622,6 +783,10 @@ export function registerRemoteSshRoute(
           ? (resolveTarget(queryParentId.trim()).originalSessionId)
           : subagentParents.get(rawSessionId) || subagentParents.get(sessionId)
 
+        if (resolvedParentId) {
+          resolvedParentId = resolveTarget(resolvedParentId).originalSessionId
+        }
+
         try {
           const proj = await caller.invoke<{ asOfSeq?: number; values?: unknown }>(
             'session/projections',
@@ -663,6 +828,30 @@ export function registerRemoteSshRoute(
             }
           }
 
+          const host = target.host || hostLabel || 'remote'
+          const rawProjections = (proj?.values as Record<string, unknown> | undefined) ?? {}
+          const namespacedProjections = { ...rawProjections }
+          if (Array.isArray(namespacedProjections.subagentCatalog)) {
+            namespacedProjections.subagentCatalog = namespacedProjections.subagentCatalog.map((item: Record<string, unknown>) => {
+              if (item && typeof item.id === 'string' && !item.id.startsWith('remote:')) {
+                return { ...item, id: namespaceRemoteId(host, item.id) }
+              }
+              return item
+            })
+          }
+          if (namespacedProjections.agentTeam && typeof namespacedProjections.agentTeam === 'object') {
+            const team = { ...(namespacedProjections.agentTeam as Record<string, unknown>) }
+            if (Array.isArray(team.members)) {
+              team.members = team.members.map((m: Record<string, unknown>) => {
+                if (m && typeof m.id === 'string' && !m.id.startsWith('remote:')) {
+                  return { ...m, id: namespaceRemoteId(host, m.id) }
+                }
+                return m
+              })
+            }
+            namespacedProjections.agentTeam = team
+          }
+
           sendJson(res, 200, {
             sessionId: rawSessionId,
             asOfSeq,
@@ -673,7 +862,7 @@ export function registerRemoteSshRoute(
               isSeeded: false,
               ...(resolvedParentId !== undefined ? { origin: 'subagent', parentSession: resolvedParentId } : {}),
             },
-            projections: (proj?.values as Record<string, unknown> | undefined) ?? {},
+            projections: namespacedProjections,
             records: page?.records ?? [],
             hasMore: page?.hasMore === true,
           })
@@ -700,9 +889,13 @@ export function registerRemoteSshRoute(
           }
           const caller = target.caller
           const sessionId = target.originalSessionId
-          const parentSessionId = body.parentSessionId
+          let parentSessionId = body.parentSessionId
             ? resolveTarget(String(body.parentSessionId)).originalSessionId
             : subagentParents.get(rawSessionId) || subagentParents.get(sessionId)
+
+          if (parentSessionId) {
+            parentSessionId = resolveTarget(parentSessionId).originalSessionId
+          }
 
           const requestId = String(body.requestId || `req-${Date.now().toString(36)}`)
           const mode = body.mode === 'steer' ? 'steer' : 'queue'
@@ -757,9 +950,13 @@ export function registerRemoteSshRoute(
           }
           const caller = target.caller
           const sessionId = target.originalSessionId
-          const parentSessionId = body.parentSessionId
+          let parentSessionId = body.parentSessionId
             ? resolveTarget(String(body.parentSessionId)).originalSessionId
             : subagentParents.get(rawSessionId) || subagentParents.get(sessionId)
+
+          if (parentSessionId) {
+            parentSessionId = resolveTarget(parentSessionId).originalSessionId
+          }
 
           let result: unknown
           if (parentSessionId !== undefined) {
@@ -806,9 +1003,13 @@ export function registerRemoteSshRoute(
 
         const caller = target.caller
         const sessionId = target.originalSessionId
-        const parentId = url.searchParams.get('parentId')
+        let parentId = url.searchParams.get('parentId')
           ? resolveTarget(url.searchParams.get('parentId')!).originalSessionId
           : subagentParents.get(rawSessionId) || subagentParents.get(sessionId)
+
+        if (parentId) {
+          parentId = resolveTarget(parentId).originalSessionId
+        }
 
         const fromSeqStr = url.searchParams.get('fromSeq')
         const fromSeq = fromSeqStr ? parseInt(fromSeqStr, 10) : undefined

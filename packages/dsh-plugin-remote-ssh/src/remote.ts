@@ -332,9 +332,29 @@ export class RemoteCaller {
       { request: { path } },
     )
     if (res && res.workspace) {
+      if (this.cachedBaseline) {
+        this.cachedBaseline = undefined
+      }
       return res.workspace
     }
     throw new Error('remote-ssh: workspace/create returned without workspace entity')
+  }
+
+  /** Invalidate cached workspace baseline so subsequent queries fetch fresh data. */
+  clearBaselineCache(): void {
+    this.cachedBaseline = undefined
+  }
+
+  /**
+   * Delete one remote workspace from the authoritative remote DSH registry.
+   */
+  async deleteWorkspace(workspaceId: string): Promise<boolean> {
+    const res = await this.invoke<{ deleted?: boolean }>(
+      'workspace/delete',
+      { request: { workspaceId } },
+    )
+    this.clearBaselineCache()
+    return Boolean(res?.deleted)
   }
 
   /**

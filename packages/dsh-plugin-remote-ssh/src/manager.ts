@@ -168,11 +168,16 @@ export class RemoteHostManager {
     const entry = this.entries.get(host)
     if (!entry) throw new Error(`Host "${host}" is not registered in RemoteHostManager.`)
     const dir = await this.launcher.createHomeDirectory(host, name)
+    let workspace: { workspaceId: string; path: string; title: string } | undefined
     // Register the created directory into remote DSH via workspace/create
     if (entry.caller) {
-      await entry.caller.createWorkspace(dir.path).catch(() => undefined)
+      try {
+        workspace = await entry.caller.createWorkspace(dir.path)
+      } catch (err) {
+        console.warn(`remote-ssh: [${host}] createWorkspace failed for "${dir.path}":`, err)
+      }
     }
-    return dir
+    return { ...dir, workspace }
   }
 
   /** Register an existing remote directory as a workspace in remote DSH. */
