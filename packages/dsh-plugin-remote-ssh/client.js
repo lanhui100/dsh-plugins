@@ -65,6 +65,10 @@ window.__ModuleLoader__.load({
 
     /** Known remote session ids, the proxy decision set. */
     const remoteSessionIds = new Set()
+    /** Cache of last known session fingerprint for granular diffing. Map<sessionId, string> */
+    const knownSessionFingerprints = new Map()
+    /** Cache of last known workspace view fingerprint for granular diffing. Map<workspaceId, string> */
+    const knownWorkspaceViewFingerprints = new Map()
     /** Known remote archived session ids from authoritative remote baseline. */
     let remoteArchivedSessionIds = new Set()
     /** Local archived ids are tracked separately so remote ids absent from session/list cannot be resurrected. */
@@ -381,6 +385,8 @@ window.__ModuleLoader__.load({
       }
       cachedWorkspaceViews = []
       remoteSessionIds.clear()
+      knownSessionFingerprints.clear()
+      knownWorkspaceViewFingerprints.clear()
       remoteArchivedSessionIds.clear()
       remotePinnedSessionIds.clear()
       localArchivedSessionIds = null
@@ -421,10 +427,12 @@ window.__ModuleLoader__.load({
       if (ctx.sessions && typeof ctx.sessions.handleSessionRemoved === 'function') {
         for (const sid of removedSids) {
           try { ctx.sessions.handleSessionRemoved(sid) } catch {}
+          knownSessionFingerprints.delete(sid)
         }
       }
       for (const sid of removedSids) {
         remoteSessionIds.delete(sid)
+        knownSessionFingerprints.delete(sid)
       }
 
       const removedWids = []
@@ -437,10 +445,12 @@ window.__ModuleLoader__.load({
       if (workspaces && typeof workspaces.removeView === 'function') {
         for (const wid of removedWids) {
           try { workspaces.removeView(wid) } catch {}
+          knownWorkspaceViewFingerprints.delete(wid)
         }
       }
       for (const wid of removedWids) {
         injectedWorkspaceIds.delete(wid)
+        knownWorkspaceViewFingerprints.delete(wid)
       }
       cachedWorkspaceViews = cachedWorkspaceViews.filter((v) => !matchesHost(v.workspaceId, targetHost))
 
@@ -752,17 +762,26 @@ window.__ModuleLoader__.load({
 
         cachedWorkspaceViews = [...nextWorkspaceViews.values()]
 
-        // Sessions: drop remote rows absent from this snapshot, then upsert the rest.
+        // Sessions: drop remote rows absent from this snapshot, then granular upsert the rest.
         if (sessions && typeof sessions.handleSessionRemoved === 'function') {
           for (const id of remoteSessionIds) {
-            if (!nextSessionIds.has(id)) sessions.handleSessionRemoved(id)
+            if (!nextSessionIds.has(id)) {
+              sessions.handleSessionRemoved(id)
+              knownSessionFingerprints.delete(id)
+            }
           }
         }
         if (sessions && typeof sessions.handleSessionAdded === 'function') {
           for (const s of nextSessions) {
-            sessions.handleSessionAdded(s)
-            if (typeof sessions.handleSessionStatus === 'function') {
-              sessions.handleSessionStatus(s.sessionId, Boolean(s.running))
+            const sid = s.sessionId
+            const fp = `${s.updatedAt}|${s.running}|${s.title ?? ''}|${s.blank}|${s.origin ?? ''}|${s.parentSessionId ?? ''}`
+            const prevFp = knownSessionFingerprints.get(sid)
+            if (prevFp !== fp) {
+              sessions.handleSessionAdded(s)
+              if (typeof sessions.handleSessionStatus === 'function') {
+                sessions.handleSessionStatus(sid, Boolean(s.running))
+              }
+              knownSessionFingerprints.set(sid, fp)
             }
           }
         }
@@ -770,7 +789,9 @@ window.__ModuleLoader__.load({
         // Workspaces: remove vanished synthetic groups, then (re)upsert current ones.
         if (workspaces && typeof workspaces.removeView === 'function') {
           for (const wid of injectedWorkspaceIds) {
-            if (!nextWorkspaceViews.has(wid)) workspaces.removeView(wid)
+            if (!nextWorkspaceViews.has(wid)) {
+              workspaces.removeView(wid)
+            }
           }
         }
         if (workspaces && typeof workspaces.upsertView === 'function') {
@@ -3073,9 +3094,14 @@ window.__ModuleLoader__.load({
         }
 
         // Tag ancestor groupSection with dsh-has-remote-ws to avoid CSS :has() selector evaluation
-        const groupSection = row.closest?.('div[class*="groupSection"]')
-        if (groupSection && !groupSection.classList.contains('dsh-has-remote-ws')) {
-          groupSection.classList.add('dsh-has-remote-ws')
+        if (row._dshGroupTagged !== true) {
+          const groupSection = row.closest?.('div[class*="groupSection"]')
+          if (groupSection) {
+            if (!groupSection.classList.contains('dsh-has-remote-ws')) {
+              groupSection.classList.add('dsh-has-remote-ws')
+            }
+            row._dshGroupTagged = true
+          }
         }
 
         const actions = row.querySelector('span[class*="rowActions"]') || row.querySelector('.dsh-host-row-actions')

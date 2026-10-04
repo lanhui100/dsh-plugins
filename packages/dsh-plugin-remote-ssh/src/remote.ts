@@ -317,7 +317,7 @@ export class RemoteCaller {
 
     this.cachedBaseline = {
       data: baseline,
-      expiresAt: Date.now() + 30_000,
+      expiresAt: Date.now() + 45_000,
     }
     return baseline
   }
