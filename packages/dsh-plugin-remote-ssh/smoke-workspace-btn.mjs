@@ -455,6 +455,33 @@ assert.equal(addRemoteBtn.getAttribute('aria-label'), '添加远程主机')
 // future re-introduction of Array.isArray fails this smoke loudly.
 assert.ok(source.includes('Array.from(header.children)'), 'reposition must convert header.children with Array.from (HTMLCollection-safe)')
 
+// 2d. Regression guard (bug: 添加远程主机 style mismatch): the button must be a
+// pure sidebar panel-row like 插件 / 自动化任务. The stale 28x28 icon-button
+// class must never come back — it overrode the row layout (width/height/padding),
+// squashing the glyph, breaking alignment and clipping the label text.
+assert.equal(addRemoteBtn.className, 'dsh-panel-row-btn', 'Add Remote button must use only the sidebar panel-row class')
+assert.ok(!source.includes('dsh-btn-add-remote-workspace'), 'the conflicting 28x28 icon-button class must be removed')
+
+// 2e. The glyph must match the official sidebar panel icons (插件 pinwheel /
+// 自动化任务 clock): Regular artwork, 16px edge, 1px stroke. The mini-DOM only
+// parses a single <svg> child and greedily collects attributes from the whole
+// template, so the svg-root identity is asserted on its unique attributes and
+// the sizes are pinned on the raw template.
+const rowSvg = addRemoteBtn.querySelector('svg')
+assert.ok(rowSvg, 'Add Remote button must render an svg glyph')
+assert.equal(rowSvg.getAttribute('xmlns'), 'http://www.w3.org/2000/svg', 'glyph must be a real svg element')
+assert.equal(rowSvg.getAttribute('viewBox'), '0 0 16 16', 'glyph viewBox must be 16x16')
+assert.match(source, /btn\.innerHTML = `<span class="dsh-panel-row-glyph"><svg width="16" height="16"/, 'panel-row glyph must be 16px like the official wide-rail panel icons')
+assert.ok(!/btn\.innerHTML = `[^`]*stroke-width="1\.[23]"/.test(source), 'panel-row glyph must use the official 1px Regular stroke, not 1.2/1.3')
+
+// 2f. Regression guard (bug: 本地 fold disappears): the old CSS folded ANY
+// groupSection sibling that followed a collapsed hostroot — so the 本地 host
+// section (a following sibling of the collapsed remote host) got display:none
+// whenever the remote host was collapsed. Workspace-tree mode already folds
+// natively inside the parent groupSection; the CSS sibling rules must not exist.
+assert.ok(!source.includes('div[class*="groupSection"]:has(div[data-row-key$=":hostroot"]'), 'the broad sibling-folding rule that hid 本地 must be gone')
+assert.ok(!/function syncHostFoldingStyles[\s\S]*?display:\s*none\s*!important/.test(source), 'syncHostFoldingStyles must not inject display:none sibling-hiding rules')
+
 // 3. Click the button to open Popover
 addRemoteBtn.click()
 

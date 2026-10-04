@@ -32,3 +32,5 @@ Status: implemented
 - 官方“工作区树”分组下，远程侧边栏呈现 主机(服务器图标+截断名) → 工作区(文件夹图标+名称) → 会话 的三级结构，工作区默认折叠。
 - `GET /remote-ssh/sessions` 契约新增可选 `homes` 字段；单 caller 分支新增 `home` 字段。
 - `smoke-client-bundle.mjs` 更新为断言主机根视图（`remote:dev:hostroot`，path=`/tmp`，title=`dev`）与纯工作区名称标题。
+
+> 折叠机制部分（“折叠用声明式 `:has()/~` CSS 控制”）被 `implemented/bug-fix/2026-10-04-fix-host-root-folding-hiding-local-and-panel-row-button.md` 取代：泛化的兄弟折叠规则会误隐藏后续兄弟节（「本地」在 dev 折叠时消失），已整体删除，回归工作区树模式下官方原生折叠。host 文件夹、图标 mask、panel 行按钮等其余设计不变。

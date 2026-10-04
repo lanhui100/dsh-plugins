@@ -1569,12 +1569,6 @@ window.__ModuleLoader__.load({
             margin-left: 6px !important;
           }
 
-          /* Fold remote workspaces when their hostroot is collapsed (aria-expanded !== "true") */
-          div[class*="groupSection"]:has(div[data-row-key$=":hostroot"]:not([aria-expanded="true"])) ~ div[class*="groupSection"]:has(div[data-row-key^="workspace:"]:not([data-row-key$=":hostroot"])),
-          div:has(> div[data-row-key$=":hostroot"]:not([aria-expanded="true"])) ~ div:has(> div[data-row-key^="workspace:"]:not([data-row-key$=":hostroot"])) {
-            display: none !important;
-          }
-
           /* Sidebar Nav Panel Row Button: matches 插件 and 自动化任务 buttons */
           .dsh-panel-row-btn {
             box-sizing: border-box;
@@ -1589,7 +1583,7 @@ window.__ModuleLoader__.load({
             border: none;
             align-items: center;
             gap: 8px;
-            margin: 0 2px 2px;
+            margin: 0 2px;
             padding: 7px 8px;
             line-height: 22px;
             display: flex;
@@ -2048,29 +2042,6 @@ window.__ModuleLoader__.load({
             color: #ef4444;
           }
 
-          /* Workspace Header Add Remote Button — mirrors official .iconButton */
-          .dsh-btn-add-remote-workspace {
-            display: inline-flex;
-            align-items: center;
-            justify-content: center;
-            width: 28px;
-            height: 28px;
-            padding: 0;
-            border: none;
-            border-radius: var(--dsw-radius-sm, 6px);
-            background: transparent;
-            color: var(--dsw-alias-label-secondary, #64748b);
-            cursor: pointer;
-            flex: none;
-            transition: background 120ms ease, color 120ms ease;
-          }
-          .dsh-btn-add-remote-workspace:hover {
-            background: var(--dsw-alias-interactive-bg-hover, rgba(0, 0, 0, 0.05));
-          }
-          .dsh-btn-add-remote-workspace:focus-visible {
-            outline: var(--dsw-focus-ring-width, 2px) solid var(--dsw-focus-ring-color, var(--dsw-alias-state-business-primary, #2563eb));
-            outline-offset: -2px;
-          }
           .dsh-add-remote-popover {
             position: fixed;
             z-index: 10000;
@@ -2358,21 +2329,12 @@ window.__ModuleLoader__.load({
      * subsequent sibling sections belonging to that host are set to display: none.
      * Purely declarative — React DOM is NEVER mutated during toggle/render.
      */
-    function syncHostFoldingStyles(hosts) {
+    function syncHostFoldingStyles(_hosts) {
       if (typeof document === 'undefined') return
       let tag = document.getElementById(FOLDING_STYLE_ID)
-      if (!tag) {
-        tag = document.createElement('style')
-        tag.id = FOLDING_STYLE_ID
-        document.head.appendChild(tag)
+      if (tag) {
+        tag.textContent = ''
       }
-      const rules = hosts.map((h) => `
-        div[class*="groupSection"]:has(div[data-row-key="workspace:remote:${h}:hostroot"]:not([aria-expanded="true"])) ~ div[class*="groupSection"]:has(div[data-row-key^="workspace:remote:${h}:"]:not([data-row-key$=":hostroot"])),
-        div:has(> div[data-row-key="workspace:remote:${h}:hostroot"]:not([aria-expanded="true"])) ~ div:has(> div[data-row-key^="workspace:remote:${h}:"]:not([data-row-key$=":hostroot"])) {
-          display: none !important;
-        }
-      `).join('\n')
-      tag.textContent = rules
     }
 
     /**
@@ -3304,11 +3266,14 @@ window.__ModuleLoader__.load({
 
       const btn = document.createElement('button')
       btn.id = 'dsh-add-remote-workspace-btn'
-      btn.className = 'dsh-btn-add-remote-workspace dsh-panel-row-btn'
+      btn.className = 'dsh-panel-row-btn'
       btn.type = 'button'
       btn.setAttribute('aria-label', '添加远程主机')
 
-      btn.innerHTML = `<span class="dsh-panel-row-glyph"><svg width="18" height="18" viewBox="0 0 16 16" fill="none" xmlns="http://www.w3.org/2000/svg" aria-hidden="true"><rect x="2" y="2" width="12" height="4.5" rx="1" stroke="currentColor" stroke-width="1.2"/><circle cx="4.5" cy="4.25" r="0.75" fill="currentColor"/><rect x="2" y="8" width="7" height="4.5" rx="1" stroke="currentColor" stroke-width="1.2"/><circle cx="4.5" cy="10.25" r="0.75" fill="currentColor"/><path d="M12.5 8.5V13.5M10 11H15" stroke="currentColor" stroke-width="1.3" stroke-linecap="round"/></svg></span><span class="dsh-panel-row-title">添加远程主机</span>`
+      // Glyph matches the official sidebar panel icons (插件 pinwheel / 自动化任务 clock):
+      // Regular artwork, 1px stroke, 16px in the wide rail (the sidebar asks for
+      // `size: wide ? 16 : 18`), wrapped in the same flex-none centered glyph span.
+      btn.innerHTML = `<span class="dsh-panel-row-glyph"><svg width="16" height="16" viewBox="0 0 16 16" fill="none" xmlns="http://www.w3.org/2000/svg" aria-hidden="true"><rect x="2" y="2" width="12" height="4.5" rx="1" stroke="currentColor" stroke-width="1"/><circle cx="4.5" cy="4.25" r="0.75" fill="currentColor"/><rect x="2" y="8" width="7" height="4.5" rx="1" stroke="currentColor" stroke-width="1"/><circle cx="4.5" cy="10.25" r="0.75" fill="currentColor"/><path d="M12.5 8.5V13.5M10 11H15" stroke="currentColor" stroke-width="1" stroke-linecap="round"/></svg></span><span class="dsh-panel-row-title">添加远程主机</span>`
 
       btn._dshTooltipDisposer = attachTooltip(btn, '添加远程主机', { side: 'right', delayMs: TOOLTIP_DELAY_MS })
 
