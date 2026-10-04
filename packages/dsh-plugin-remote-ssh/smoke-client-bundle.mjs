@@ -166,6 +166,22 @@ globalThis.fetch = async (url) => {
       json: async () => ({ ok: true, value: { title: 'Renamed Title', seq: 5 } }),
     }
   }
+  if (urlStr.includes('/remote-ssh/session-select-model')) {
+    return {
+      ok: true,
+      status: 200,
+      json: async () => ({
+        ok: true,
+        value: {
+          selected: {
+            provider: 'anthropic',
+            model: 'claude-3-7-sonnet',
+            reasoningEffort: 'high',
+          },
+        },
+      }),
+    }
+  }
   if (urlStr.includes('/remote-ssh/session-follow')) {
     const sseFrames = [
       JSON.stringify({ type: 'snapshot', cursor: 42, records: [{ seq: 1 }] }),
@@ -279,7 +295,7 @@ class RemoteService extends Service {
 class RemoteSessionService extends Service {
   constructor(ctx) {
     super(ctx, 'remote.session')
-    for (const method of ['page', 'follow', 'projections', 'prompt', 'cancel', 'rename', 'attachment', 'create']) {
+    for (const method of ['page', 'follow', 'projections', 'prompt', 'cancel', 'rename', 'selectModel', 'attachment', 'create']) {
       Object.defineProperty(this, method, {
         configurable: true,
         enumerable: true,
@@ -585,6 +601,27 @@ assert.ok(requestedUrls.some((u) => u.includes('/remote-ssh/session-rename')), '
 // Local branch: rename passes through
 const localRename = await pluginCtx.remote.session.rename({ sessionId: 'session-local-x', title: 'Local Title' })
 assert.equal(localRename.value?.method, 'rename', 'Local rename must pass through')
+
+// Session actions: selectModel
+// Remote branch: selectModel forwards to /remote-ssh/session-select-model
+const selectModelRes = await pluginCtx.remote.session.selectModel({
+  sessionId: 'session-demo-1',
+  provider: 'anthropic',
+  model: 'claude-3-7-sonnet',
+  reasoningEffort: 'high',
+})
+assert.ok(selectModelRes.ok, 'Remote selectModel request must succeed')
+assert.equal(selectModelRes.value?.selected?.provider, 'anthropic', 'Remote selectModel must return provider')
+assert.equal(selectModelRes.value?.selected?.model, 'claude-3-7-sonnet', 'Remote selectModel must return model')
+assert.ok(requestedUrls.some((u) => u.includes('/remote-ssh/session-select-model')), 'selectModel must hit /remote-ssh/session-select-model')
+
+// Local branch: selectModel passes through
+const localSelectModel = await pluginCtx.remote.session.selectModel({
+  sessionId: 'session-local-x',
+  provider: 'deepseek',
+  model: 'deepseek-chat',
+})
+assert.equal(localSelectModel.value?.method, 'selectModel', 'Local selectModel must pass through')
 
 // Workspace actions: archiveSession & unarchiveSession
 // Remote branch: archiveSession forwards to /remote-ssh/session-archive and updates wsList

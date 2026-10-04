@@ -693,6 +693,27 @@ export class RemoteCaller {
       signal,
     )
   }
+
+  async selectRemoteSessionModel(
+    sessionId: string,
+    provider: string,
+    model: string,
+    reasoningEffort?: string,
+    signal?: AbortSignal,
+  ): Promise<{ readonly selected: { readonly provider: string; readonly model: string; readonly reasoningEffort?: string } }> {
+    return await this.invoke<{ readonly selected: { readonly provider: string; readonly model: string; readonly reasoningEffort?: string } }>(
+      'session/selectModel',
+      {
+        request: {
+          sessionId,
+          provider,
+          model,
+          ...(reasoningEffort !== undefined ? { reasoningEffort } : {}),
+        },
+      },
+      signal,
+    )
+  }
 }
 
 export interface RemoteInteractionQuestionOption {

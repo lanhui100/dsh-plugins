@@ -55,6 +55,9 @@ export const SESSION_UNPIN_ROUTE = '/remote-ssh/session-unpin'
 /** Absolute pathname for renaming a remote session. */
 export const SESSION_RENAME_ROUTE = '/remote-ssh/session-rename'
 
+/** Absolute pathname for selecting model of a remote session. */
+export const SESSION_SELECT_MODEL_ROUTE = '/remote-ssh/session-select-model'
+
 /** Absolute pathname for querying unadded key-configured SSH hosts from ~/.ssh/config. */
 export const AVAILABLE_HOSTS_ROUTE = '/remote-ssh/available-hosts'
 
@@ -1173,5 +1176,40 @@ export function registerRemoteSshRoute(
         }
       },
     }), 'remote-ssh: session rename route')
+
+    scoped.effect(() => scoped.webServer.register({
+      kind: 'exact',
+      path: SESSION_SELECT_MODEL_ROUTE,
+      handler: async (req, res) => {
+        try {
+          const body = await readJsonBody(req)
+          const rawSessionId = typeof body.sessionId === 'string' ? body.sessionId.trim() : undefined
+          const provider = typeof body.provider === 'string' ? body.provider.trim() : undefined
+          const model = typeof body.model === 'string' ? body.model.trim() : undefined
+          const reasoningEffort = typeof body.reasoningEffort === 'string' ? body.reasoningEffort.trim() : undefined
+          if (!rawSessionId || !provider || !model) {
+            sendJson(res, 400, { ok: false, error: { message: 'Fields "sessionId", "provider", and "model" are required' } })
+            return
+          }
+          const target = resolveTarget(rawSessionId)
+          if (target.caller === undefined) {
+            sendJson(res, 503, { ok: false, error: { message: 'tunnel-not-ready' } })
+            return
+          }
+          const result = await target.caller.selectRemoteSessionModel(
+            target.originalSessionId,
+            provider,
+            model,
+            reasoningEffort,
+          )
+          sendJson(res, 200, { ok: true, value: result })
+        } catch (error) {
+          sendJson(res, 200, {
+            ok: false,
+            error: { message: error instanceof Error ? error.message : String(error) },
+          })
+        }
+      },
+    }), 'remote-ssh: session select-model route')
   })
 }

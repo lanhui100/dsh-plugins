@@ -54,6 +54,9 @@ export const SESSION_UNPIN_ROUTE = '/remote-ssh/session-unpin'
 /** Host route for renaming a remote session. */
 export const SESSION_RENAME_ROUTE = '/remote-ssh/session-rename'
 
+/** Host route for selecting model of a remote session. */
+export const SESSION_SELECT_MODEL_ROUTE = '/remote-ssh/session-select-model'
+
 
 /** Host route for querying remote workspaces/home directories. */
 export const REMOTE_WORKSPACES_ROUTE = '/remote-ssh/workspaces'

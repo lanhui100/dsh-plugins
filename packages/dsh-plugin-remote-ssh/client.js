@@ -40,6 +40,7 @@ window.__ModuleLoader__.load({
     const SESSION_PIN_ROUTE = '/remote-ssh/session-pin'
     const SESSION_UNPIN_ROUTE = '/remote-ssh/session-unpin'
     const SESSION_RENAME_ROUTE = '/remote-ssh/session-rename'
+    const SESSION_SELECT_MODEL_ROUTE = '/remote-ssh/session-select-model'
     const AVAILABLE_HOSTS_ROUTE = '/remote-ssh/available-hosts'
     const ADD_HOST_ROUTE = '/remote-ssh/add-host'
     const REMOVE_HOST_ROUTE = '/remote-ssh/remove-host'
@@ -618,7 +619,7 @@ window.__ModuleLoader__.load({
     function installSessionProxy(ctx) {
       const ns = ctx.remote && ctx.remote.session
       if (!ns) return () => {}
-      const methods = ['page', 'follow', 'projections', 'prompt', 'cancel', 'rename', 'attachment', 'create']
+      const methods = ['page', 'follow', 'projections', 'prompt', 'cancel', 'rename', 'selectModel', 'attachment', 'create']
       const saved = new Map()
       for (const method of methods) {
         const desc = Object.getOwnPropertyDescriptor(ns, method)
@@ -854,6 +855,69 @@ window.__ModuleLoader__.load({
             return { ok: false, error: new Error(data?.error?.message || `HTTP ${res.status}`) }
           } catch (error) {
             return { ok: false, error: error instanceof Error ? error : new Error(String(error)) }
+          }
+        },
+        selectModel: async (...args) => {
+          const { id } = sessionTargetOfRequest(args)
+          if (!isRemote(id)) return originalCall('selectModel', args)
+          const req = (args && typeof args[0] === 'object' && args[0] !== null) ? args[0] : {}
+          const provider = typeof req.provider === 'string' ? req.provider : undefined
+          const model = typeof req.model === 'string' ? req.model : undefined
+          const reasoningEffort = typeof req.reasoningEffort === 'string' ? req.reasoningEffort : undefined
+          const signal = args[1]
+          if (!provider || !model) {
+            return { ok: false, error: new Error('provider and model are required for selectModel') }
+          }
+          try {
+            const res = await fetch(SESSION_SELECT_MODEL_ROUTE, {
+              method: 'POST',
+              headers: { 'content-type': 'application/json', accept: 'application/json' },
+              body: JSON.stringify({
+                sessionId: id,
+                provider,
+                model,
+                ...(reasoningEffort !== undefined ? { reasoningEffort } : {}),
+              }),
+              signal,
+            })
+            const data = await res.json().catch(() => null)
+            if (data && data.ok) {
+              // Update local session projections cache so UI reflects selected model immediately
+              if (ctx.sessions) {
+                const binding = typeof ctx.sessions.binding === 'function' ? ctx.sessions.binding(id) : undefined
+                const sessionModel = binding?.session || ctx.sessions.byId?.[id]
+                if (sessionModel?.projections) {
+                  const face = typeof sessionModel.projections.faceOf === 'function' ? sessionModel.projections.faceOf('modelSelection') : undefined
+                  if (face && typeof face.set === 'function') {
+                    const snap = typeof face.getSnapshot === 'function' ? face.getSnapshot() : {}
+                    face.set({
+                      lastUsed: snap?.lastUsed ?? null,
+                      next: {
+                        provider,
+                        model,
+                        ...(reasoningEffort !== undefined ? { reasoningEffort } : {}),
+                      },
+                    })
+                  }
+                }
+              }
+              return { ok: true, value: data.value ?? { selected: { provider, model, reasoningEffort } } }
+            }
+            return {
+              ok: false,
+              error: {
+                code: data?.error?.code || 'remote-ssh/select-model-failed',
+                message: data?.error?.message || `HTTP ${res.status}`,
+              },
+            }
+          } catch (error) {
+            return {
+              ok: false,
+              error: {
+                code: 'remote-ssh/select-model-error',
+                message: error instanceof Error ? error.message : String(error),
+              },
+            }
           }
         },
         attachment: (...args) => {

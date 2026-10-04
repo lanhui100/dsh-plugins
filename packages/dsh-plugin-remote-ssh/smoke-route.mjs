@@ -22,6 +22,7 @@ import {
   SESSION_PIN_ROUTE,
   SESSION_UNPIN_ROUTE,
   SESSION_RENAME_ROUTE,
+  SESSION_SELECT_MODEL_ROUTE,
 } from './lib/index.js'
 
 const baseUrl = process.env.REMOTE_SSH_BASE_URL ?? 'http://127.0.0.1:39387'
@@ -272,14 +273,15 @@ if (sampleSession?.sessionId) {
   console.log('pending interaction lifecycle verified successfully in smoke-route')
 }
 
-// 9. Session Operations: Archive, Unarchive, Pin, Unpin, Rename
+// 9. Session Operations: Archive, Unarchive, Pin, Unpin, Rename, SelectModel
 const archiveRoute = routes.get(SESSION_ARCHIVE_ROUTE)
 const unarchiveRoute = routes.get(SESSION_UNARCHIVE_ROUTE)
 const pinRoute = routes.get(SESSION_PIN_ROUTE)
 const unpinRoute = routes.get(SESSION_UNPIN_ROUTE)
 const renameRoute = routes.get(SESSION_RENAME_ROUTE)
+const selectModelRoute = routes.get(SESSION_SELECT_MODEL_ROUTE)
 
-if (!archiveRoute || !unarchiveRoute || !pinRoute || !unpinRoute || !renameRoute) {
+if (!archiveRoute || !unarchiveRoute || !pinRoute || !unpinRoute || !renameRoute || !selectModelRoute) {
   throw new Error('missing session operation route registrations')
 }
 
@@ -366,6 +368,21 @@ if (sampleSession) {
     },
   }
   await renameRoute.handler(mockRestoreReq, res)
+
+  // 9d. Test SelectModel route validation
+  captured = { status: 0, body: '' }
+  const mockSelectModelInvalidReq = {
+    on(ev, cb) {
+      if (ev === 'data') cb(Buffer.from(JSON.stringify({ sessionId: sampleSession.sessionId })))
+      if (ev === 'end') cb()
+    },
+  }
+  await selectModelRoute.handler(mockSelectModelInvalidReq, res)
+  console.log(`selectModel route validation status: ${captured.status} body: ${captured.body}`)
+  const selectModelInvalidJson = JSON.parse(captured.body)
+  if (captured.status !== 400 || selectModelInvalidJson.ok !== false) {
+    throw new Error('selectModel route must reject incomplete request with 400')
+  }
 }
 
 caller.dispose()
