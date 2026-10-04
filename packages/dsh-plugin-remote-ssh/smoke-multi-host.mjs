@@ -321,6 +321,29 @@ try {
   })
   assert.equal(removeUnknownJson?.error, 'invalid-host', 'remove-host for an unknown host must fail with invalid-host')
 
+  // 10. When all hosts are removed, SESSIONS_ROUTE must return 200 with empty lists (not 503).
+  await removeHandler({
+    on(event, callback) {
+      if (event === 'data') callback(Buffer.from(JSON.stringify({ host: 'dev' })))
+      if (event === 'end') callback()
+    },
+  }, {
+    writeHead: () => {},
+    end: () => {},
+  })
+  assert.equal(manager.getHostNames().length, 0, 'all hosts removed')
+
+  let emptySessionsStatus = 0
+  let emptySessionsBody = null
+  await sessionsHandler({}, {
+    writeHead: (status) => { emptySessionsStatus = status },
+    end: (body) => { emptySessionsBody = JSON.parse(body) },
+  })
+  assert.equal(emptySessionsStatus, 200, 'sessions route must return 200 when no hosts are registered')
+  assert.deepEqual(emptySessionsBody?.workspaces, [], 'workspaces must be empty')
+  assert.deepEqual(emptySessionsBody?.sessions, [], 'sessions must be empty')
+  assert.equal(emptySessionsBody?.total, 0, 'total sessions must be 0')
+
 } finally {
   try {
     unlinkSync(tempSshConfig)

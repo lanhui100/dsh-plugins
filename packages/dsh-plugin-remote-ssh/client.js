@@ -389,6 +389,112 @@ window.__ModuleLoader__.load({
       sessionParents.clear()
     }
 
+    function hostOfRemoteId(id) {
+      if (!isNamespacedRemoteId(id)) return undefined
+      const secondColon = id.indexOf(':', 'remote:'.length)
+      if (secondColon === -1) return undefined
+      const seg = id.slice('remote:'.length, secondColon)
+      try {
+        return decodeURIComponent(seg)
+      } catch {
+        return seg
+      }
+    }
+
+    function matchesHost(id, targetHost) {
+      if (!id || typeof id !== 'string') return false
+      const h = hostOfRemoteId(id)
+      if (h && h.toLowerCase().trim() === targetHost.toLowerCase().trim()) return true
+      const rawPrefix = `remote:${targetHost}:`
+      const encPrefix = `remote:${encodeURIComponent(targetHost)}:`
+      return id.startsWith(rawPrefix) || id.startsWith(encPrefix)
+    }
+
+    function removeRemoteHost(ctx, targetHost) {
+      if (!targetHost || typeof targetHost !== 'string') return
+      const removedSids = []
+      for (const sid of remoteSessionIds) {
+        if (matchesHost(sid, targetHost)) {
+          removedSids.push(sid)
+        }
+      }
+      if (ctx.sessions && typeof ctx.sessions.handleSessionRemoved === 'function') {
+        for (const sid of removedSids) {
+          try { ctx.sessions.handleSessionRemoved(sid) } catch {}
+        }
+      }
+      for (const sid of removedSids) {
+        remoteSessionIds.delete(sid)
+      }
+
+      const removedWids = []
+      for (const wid of injectedWorkspaceIds) {
+        if (matchesHost(wid, targetHost)) {
+          removedWids.push(wid)
+        }
+      }
+      const workspaces = ctx.workspaces && ctx.workspaces.list
+      if (workspaces && typeof workspaces.removeView === 'function') {
+        for (const wid of removedWids) {
+          try { workspaces.removeView(wid) } catch {}
+        }
+      }
+      for (const wid of removedWids) {
+        injectedWorkspaceIds.delete(wid)
+      }
+      cachedWorkspaceViews = cachedWorkspaceViews.filter((v) => !matchesHost(v.workspaceId, targetHost))
+
+      let archChanged = false
+      const nextArch = new Set()
+      for (const sid of remoteArchivedSessionIds) {
+        if (matchesHost(sid, targetHost)) archChanged = true
+        else nextArch.add(sid)
+      }
+      if (archChanged) {
+        remoteArchivedSessionIds = nextArch
+        syncArchivedSessions(ctx)
+      }
+
+      let pinChanged = false
+      const nextPin = new Set()
+      for (const sid of remotePinnedSessionIds) {
+        if (matchesHost(sid, targetHost)) pinChanged = true
+        else nextPin.add(sid)
+      }
+      if (pinChanged) {
+        remotePinnedSessionIds = nextPin
+        syncPinnedSessions(ctx)
+      }
+
+      for (const sid of removedSids) {
+        sessionParents.delete(sid)
+        rawToNamespaced.delete(sid)
+        if (activeInteractions.has(sid)) {
+          const act = activeInteractions.get(sid)
+          if (act) handleInteractionCancel(act.eventId, sid)
+        }
+      }
+      for (const [k, v] of sessionParents.entries()) {
+        if (matchesHost(k, targetHost) || matchesHost(v, targetHost)) {
+          sessionParents.delete(k)
+        }
+      }
+      for (const [k, v] of rawToNamespaced.entries()) {
+        if (matchesHost(v, targetHost)) {
+          rawToNamespaced.delete(k)
+        }
+      }
+
+      if (typeof document !== 'undefined') {
+        const existingHostPopover = (typeof document.getElementById === 'function' ? document.getElementById('dsh-host-add-workspace-popover') : null) || document.querySelector?.('#dsh-host-add-workspace-popover')
+        if (existingHostPopover && existingHostPopover.dataset && existingHostPopover.dataset.host === targetHost) {
+          try { existingHostPopover.remove() } catch {}
+        }
+      }
+
+      lastSnapshotFingerprint = null
+    }
+
     /**
      * Ensure DeepSeek Harness is operating in "workspace-tree" grouping mode,
      * which activates DSH's native path-prefix nesting (nestWorkspaces: true).
@@ -437,7 +543,21 @@ window.__ModuleLoader__.load({
       } catch {
         return
       }
-      if (!response.ok) return
+      if (!response.ok) {
+        if (response.status === 503) {
+          const body = await response.json().catch(() => null)
+          if (body && Array.isArray(body.hosts)) {
+            const validHosts = new Set(body.hosts.map((h) => String(h).trim().toLowerCase()))
+            for (const wid of [...injectedWorkspaceIds]) {
+              const h = hostOfRemoteId(wid)
+              if (h && !validHosts.has(h.toLowerCase())) {
+                removeRemoteHost(ctx, h)
+              }
+            }
+          }
+        }
+        return
+      }
       const body = await response.json().catch(() => null)
       if (!body || !Array.isArray(body.workspaces)) return
 
@@ -751,8 +871,12 @@ window.__ModuleLoader__.load({
 
                     if (frame.type === 'interaction/request') {
                       handleInteractionRequest(frame)
+                      continue
                     } else if (frame.type === 'interaction/cancel') {
                       handleInteractionCancel(frame.eventId, frame.sessionId || id)
+                      continue
+                    } else if (frame.type === 'error') {
+                      throw new Error(frame.error || 'Remote follow stream error')
                     }
 
                     yield frame
@@ -3587,6 +3711,7 @@ window.__ModuleLoader__.load({
                 const postData = await parseJsonResponse(postRes)
                 if (postRes.ok && postData && postData.ok) {
                   if (ctx) {
+                    removeRemoteHost(ctx, item.host)
                     void reconcileRemoteSource(ctx)
                   }
                   await refresh()
@@ -3850,6 +3975,7 @@ window.__ModuleLoader__.load({
     }
 
     exports.apply = apply
+    exports.removeRemoteHost = removeRemoteHost
     exports.inject = ['workspaces', 'sessions', 'remote', 'remote.session', 'remote.workspace']
     return module.exports
   },

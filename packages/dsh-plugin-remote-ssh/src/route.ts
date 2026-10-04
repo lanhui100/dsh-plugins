@@ -358,6 +358,18 @@ export function registerRemoteSshRoute(
       handler: async (_req, res) => {
         if (isManager) {
           const manager = managerOrGetCaller as RemoteHostManager
+          if (manager.getHostNames().length === 0) {
+            sendJson(res, 200, {
+              hosts: [],
+              homes: [],
+              total: 0,
+              workspaces: [],
+              sessions: [],
+              archivedSessionIds: [],
+              pinnedSessionIds: [],
+            })
+            return
+          }
           const readyCallers = manager.getReadyCallers()
           if (readyCallers.length === 0) {
             sendJson(res, 503, { error: 'tunnel-not-ready', hosts: manager.getHostNames() })

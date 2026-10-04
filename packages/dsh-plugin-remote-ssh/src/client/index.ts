@@ -256,3 +256,13 @@ export function installSessionProxy(ctx: Context): () => void {
 export function removeRemoteSource(ctx: Context): void {
   void ctx
 }
+
+/**
+ * Remove a specific remote host's workspace/session rows from the official models.
+ * @param ctx - client plugin context.
+ * @param host - host alias being removed.
+ */
+export function removeRemoteHost(ctx: Context, host: string): void {
+  void ctx
+  void host
+}

@@ -394,10 +394,18 @@ class RemoteWorkspaceService extends Service {
   }
 }
 
+const removedWorkspaceViews = []
+const removedSessionIds = []
+
 class WorkspacesService extends Service {
   constructor(ctx) {
     super(ctx, 'workspaces')
-    this.list = { items: [], archivedSessionIds: [], upsertView: () => {}, removeView: () => {} }
+    this.list = {
+      items: [],
+      archivedSessionIds: [],
+      upsertView: () => {},
+      removeView: (wid) => { removedWorkspaceViews.push(wid) },
+    }
   }
 }
 
@@ -407,6 +415,7 @@ class SessionsService extends Service {
   }
   handleSessionAdded() {}
   handleSessionStatus() {}
+  handleSessionRemoved(id) { removedSessionIds.push(id) }
 }
 
 const root = new Context()
@@ -541,6 +550,7 @@ disconnectBtn.click()
 await new Promise((resolve) => setTimeout(resolve, 50))
 assert.equal(postedRemoveRequests.length, 1, 'POST /remote-ssh/remove-host must be dispatched on disconnect')
 assert.equal(postedRemoveRequests[0].host, 'dev')
+assert.ok(removedWorkspaceViews.includes('remote:dev:hostroot'), 'hostroot for dev must be removed from workspaces on disconnect')
 
 // 4c. Empty-body disconnect responses (route-missing fallback) must surface a
 //     friendly error instead of a raw "Unexpected end of JSON input" crash.
