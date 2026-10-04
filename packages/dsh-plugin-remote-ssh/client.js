@@ -516,12 +516,14 @@ window.__ModuleLoader__.load({
         const firstLocalPath = localWorkspaces[0]?.path || ''
         const driveMatch = firstLocalPath.match(/^([A-Za-z]:[/\\])/)
         const localDriveRoot = driveMatch ? driveMatch[1].replace(/\\/g, '/') : (firstLocalPath.startsWith('/') ? '/' : 'C:/')
+        // Local workspaces: don't pass actions so no ... menu is generated
         const localHostRootId = 'local:hostroot'
         nextWorkspaceViews.set(localHostRootId, {
           workspaceId: localHostRootId,
           path: localDriveRoot,
           title: '本地',
           sessionIds: [],
+          actions: undefined,
           createdAt: undefined,
           updatedAt: new Date().toISOString(),
         })
@@ -1643,8 +1645,8 @@ window.__ModuleLoader__.load({
             align-items: center !important;
             gap: 4px !important;
           }
-          /* In hostroot, hide the ... menu (rename/delete) and the new session button */
-          div[data-row-key$=":hostroot"] span[class*="rowActions"] > button {
+          /* In hostroot, hide all official descendants (both Menu anchor and Tooltip for newSession) */
+          div[data-row-key$=":hostroot"] span[class*="rowActions"] > :not(.dsh-host-action-btn) {
             display: none !important;
           }
           /* Only display our custom host add-workspace button */
