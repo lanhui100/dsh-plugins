@@ -2182,15 +2182,15 @@ window.__ModuleLoader__.load({
           .dsh-remote-host-select {
             box-sizing: border-box;
             flex: 1;
-            height: 32px;
+            height: 36px;
             padding: 0 10px;
-            border-radius: var(--dsw-radius-md, 8px);
+            border-radius: var(--dsw-radius-sm, 4px);
             border: 0.5px solid var(--dsw-alias-border-l3, rgba(0, 0, 0, 0.18));
             background: var(--dsw-alias-bg-layer-1, #ffffff);
             color: var(--dsw-alias-label-primary, inherit);
             font-family: inherit;
-            font-size: 12px;
-            line-height: 1.5;
+            font-size: 13px;
+            line-height: 22px;
             outline: none;
             cursor: pointer;
             transition: border-color 150ms ease, box-shadow 150ms ease;
@@ -2202,15 +2202,15 @@ window.__ModuleLoader__.load({
           .dsh-remote-host-input {
             box-sizing: border-box;
             flex: 1;
-            height: 32px;
+            height: 36px;
             padding: 0 10px;
-            border-radius: var(--dsw-radius-md, 8px);
+            border-radius: var(--dsw-radius-sm, 4px);
             border: 0.5px solid var(--dsw-alias-border-l3, rgba(0, 0, 0, 0.18));
             background: var(--dsw-alias-bg-layer-1, #ffffff);
             color: var(--dsw-alias-label-primary, inherit);
             font-family: inherit;
-            font-size: 12px;
-            line-height: 1.5;
+            font-size: 13px;
+            line-height: 22px;
             outline: none;
             transition: border-color 150ms ease, box-shadow 150ms ease;
           }
@@ -2227,16 +2227,16 @@ window.__ModuleLoader__.load({
             align-items: center;
             justify-content: center;
             gap: 4px;
-            height: 32px;
-            padding: 0 12px;
-            border-radius: var(--dsw-radius-md, 8px);
+            height: 36px;
+            padding: 0 14px;
+            border-radius: var(--dsw-radius-sm, 4px);
             border: 0.5px solid var(--dsw-alias-border-l3, rgba(0, 0, 0, 0.2));
             background: var(--dsw-alias-bg-layer-1, #ffffff);
             color: var(--dsw-alias-label-primary, #1e293b);
             font-family: inherit;
-            font-size: 12px;
+            font-size: 13px;
             font-weight: 500;
-            line-height: 18px;
+            line-height: 22px;
             cursor: pointer;
             white-space: nowrap;
             transition: background-color 150ms ease, border-color 150ms ease, color 150ms ease;

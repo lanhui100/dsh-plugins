@@ -69,10 +69,11 @@ fi
 
   /** List immediate directories under the remote user's home directory. */
   async listHomeDirectories(host: string): Promise<RemoteHomeDirectory[]> {
-    const output = await this.runner(host, `printf 'HOME=%s\\n' "$HOME"; find "$HOME" -mindepth 1 -maxdepth 1 -type d -printf '%f\\n' 2>/dev/null | sort`)
+    // List only real directories (-type d), exclude hidden directories (! -name '.*')
+    const output = await this.runner(host, `printf 'HOME=%s\\n' "$HOME"; cd "$HOME" 2>/dev/null && find . -mindepth 1 -maxdepth 1 -type d ! -name '.*' -printf '%f\\n' 2>/dev/null | sort`)
     const lines = output.split(/\r?\n/).map((line) => line.trim()).filter(Boolean)
     const home = lines.find((line) => line.startsWith('HOME='))?.slice(5) ?? '~'
-    return lines.filter((name) => /^[A-Za-z0-9._-]+$/.test(name)).map((name) => ({
+    return lines.filter((name) => /^[A-Za-z0-9._-]+$/.test(name) && !name.startsWith('.') && name !== 'HOME=' + home).map((name) => ({
       name,
       path: `${home}/${name}`,
     }))
