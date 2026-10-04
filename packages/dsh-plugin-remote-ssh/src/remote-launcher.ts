@@ -95,9 +95,11 @@ fi
     if (!/^[A-Za-z0-9._-]+$/.test(trimmed) || trimmed === '.' || trimmed === '..') {
       throw new Error('工作区名称只允许字母、数字、点、下划线和短横线。')
     }
-    const output = await this.runner(host, `mkdir -p -- "$HOME/${trimmed}" && test -d "$HOME/${trimmed}" && printf READY`)
+    const home = await this.homeDirectory(host)
+    const absPath = `${home}/${trimmed}`
+    const output = await this.runner(host, `mkdir -p -- "${absPath}" && test -d "${absPath}" && printf READY`)
     if (!output.includes('READY')) throw new Error(`远端主机无法在 ~/ 下创建工作区 "${trimmed}"，请检查目录权限。`)
-    return { name: trimmed, path: `$HOME/${trimmed}` }
+    return { name: trimmed, path: absPath }
   }
 
 

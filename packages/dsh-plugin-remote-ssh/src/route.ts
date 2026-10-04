@@ -206,7 +206,7 @@ export function registerRemoteSshRoute(
         try {
           const body = await readJsonBody(req)
           const host = typeof body.host === 'string' ? body.host.trim() : ''
-          const targetPath = typeof body.path === 'string' ? body.path.trim() : ''
+          let targetPath = typeof body.path === 'string' ? body.path.trim() : ''
           if (!host || !targetPath) {
             sendJson(res, 400, { error: 'missing-fields', message: 'Fields "host" and "path" are required.' })
             return
@@ -217,10 +217,19 @@ export function registerRemoteSshRoute(
             sendJson(res, 503, { error: 'tunnel-not-ready', message: `Host "${host}" is not ready.` })
             return
           }
+
+          // Expand ~ or resolve relative paths to absolute remote home path
+          if (targetPath.startsWith('~')) {
+            const home = await manager.getHomeDirectory(host).catch(() => '')
+            if (home) {
+              targetPath = targetPath === '~' ? home : `${home}/${targetPath.replace(/^~[/\\]+/, '')}`
+            }
+          }
+
           // Register workspace in remote DSH
-          const wsRes = await caller.createWorkspace(targetPath).catch(() => undefined)
-          // Also create an initial session in this workspace
-          await caller.invoke('session/create', { request: { cwd: targetPath } }).catch(() => undefined)
+          const wsRes = await caller.createWorkspace(targetPath)
+          // Also create an initial session in this workspace so it immediately has sessions
+          await caller.invoke('session/create', { request: { workspaceId: wsRes.workspaceId } }).catch(() => undefined)
           sendJson(res, 200, { ok: true, host, path: targetPath, workspace: wsRes })
         } catch (error) {
           sendJson(res, 400, { error: 'register-failed', message: error instanceof Error ? error.message : String(error) })

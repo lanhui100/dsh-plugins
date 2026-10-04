@@ -2642,12 +2642,26 @@ window.__ModuleLoader__.load({
       wsForm.style.background = 'var(--dsw-alias-bg-module-platform, rgba(0, 0, 0, 0.03))'
       wsForm.style.borderRadius = 'var(--dsw-radius-md, 8px)'
 
+      const selectRow = document.createElement('div')
+      selectRow.style.display = 'flex'
+      selectRow.style.gap = '6px'
+      selectRow.style.alignItems = 'center'
+
       const dirSelect = document.createElement('select')
       dirSelect.className = 'dsh-remote-host-select'
-      dirSelect.style.width = '100%'
+      dirSelect.style.flex = '1'
+
+      const addExistingBtn = document.createElement('button')
+      addExistingBtn.className = 'dsh-btn-white-outline'
+      addExistingBtn.textContent = '添加'
+
+      selectRow.appendChild(dirSelect)
+      selectRow.appendChild(addExistingBtn)
+      wsForm.appendChild(selectRow)
 
       const updateDirOptions = async () => {
         dirSelect.innerHTML = '<option value="">正在读取目录列表...</option>'
+        addExistingBtn.disabled = true
         try {
           const res = await fetch(REMOTE_WORKSPACES_ROUTE)
           const wsData = await parseJsonResponse(res)
@@ -2657,6 +2671,7 @@ window.__ModuleLoader__.load({
             : []
           if (dirs.length === 0) {
             dirSelect.innerHTML = '<option value="">无现有文件夹</option>'
+            addExistingBtn.disabled = true
           } else {
             for (const d of dirs) {
               const opt = document.createElement('option')
@@ -2667,27 +2682,29 @@ window.__ModuleLoader__.load({
               opt.textContent = displayName
               dirSelect.appendChild(opt)
             }
+            addExistingBtn.disabled = false
           }
         } catch {
           dirSelect.innerHTML = '<option value="">读取失败</option>'
+          addExistingBtn.disabled = true
         }
       }
       void updateDirOptions()
 
-      wsForm.appendChild(dirSelect)
-
       const inputRow = document.createElement('div')
       inputRow.style.display = 'flex'
       inputRow.style.gap = '6px'
+      inputRow.style.alignItems = 'center'
 
       const nameInput = document.createElement('input')
       nameInput.type = 'text'
       nameInput.placeholder = '或输入新建目录名'
       nameInput.className = 'dsh-remote-host-input'
+      nameInput.style.flex = '1'
 
       const createBtn = document.createElement('button')
       createBtn.className = 'dsh-btn-white-outline'
-      createBtn.textContent = '添加/新建'
+      createBtn.textContent = '新建'
 
       inputRow.appendChild(nameInput)
       inputRow.appendChild(createBtn)
@@ -2697,56 +2714,77 @@ window.__ModuleLoader__.load({
       wsFeedback.className = 'dsh-popover-feedback'
       wsForm.appendChild(wsFeedback)
 
+      addExistingBtn.addEventListener('click', async () => {
+        const selectedDir = dirSelect.value ? dirSelect.value.replace(/^~[/\\]+/, '') : ''
+        if (!selectedDir) {
+          wsFeedback.className = 'dsh-popover-feedback dsh-feedback-error'
+          wsFeedback.textContent = '请先选择文件夹'
+          return
+        }
+
+        addExistingBtn.disabled = true
+        wsFeedback.className = 'dsh-popover-feedback'
+        wsFeedback.textContent = '正在添加工作区...'
+        try {
+          const selectedPath = dirSelect.selectedOptions && dirSelect.selectedOptions[0] ? dirSelect.selectedOptions[0].dataset.path : ''
+          const targetPath = selectedPath || `~/${selectedDir}`
+          const regRes = await fetch('/remote-ssh/register-workspace', {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({ host, path: targetPath }),
+          })
+          const regData = await parseJsonResponse(regRes)
+          if (!regRes.ok || !regData || !regData.ok) {
+            const err = regData?.message || regData?.error || '添加工作区失败'
+            wsFeedback.className = 'dsh-popover-feedback dsh-feedback-error'
+            wsFeedback.textContent = err
+            showRemoteToast(err, 'error')
+            addExistingBtn.disabled = false
+            return
+          }
+
+          showRemoteToast(`工作区 ${selectedDir} 添加成功`)
+          if (ctx) void reconcileRemoteSource(ctx)
+          setTimeout(() => {
+            cleanup()
+          }, 700)
+        } catch (err) {
+          const msg = String(err.message || err)
+          wsFeedback.className = 'dsh-popover-feedback dsh-feedback-error'
+          wsFeedback.textContent = msg
+          showRemoteToast(msg, 'error')
+          addExistingBtn.disabled = false
+        }
+      })
+
       createBtn.addEventListener('click', async () => {
         const customName = nameInput.value.trim().replace(/^~[/\\]+/, '')
-        const selectedDir = dirSelect.value ? dirSelect.value.replace(/^~[/\\]+/, '') : ''
-        const targetName = customName || selectedDir
-        if (!targetName) {
+        if (!customName) {
           wsFeedback.className = 'dsh-popover-feedback dsh-feedback-error'
-          wsFeedback.textContent = '请选择或输入目录名'
+          wsFeedback.textContent = '请输入新建目录名'
           return
         }
 
         createBtn.disabled = true
         wsFeedback.className = 'dsh-popover-feedback'
-        wsFeedback.textContent = '正在添加工作区...'
+        wsFeedback.textContent = '正在新建工作区...'
         try {
-          const selectedPath = dirSelect.selectedOptions && dirSelect.selectedOptions[0] ? dirSelect.selectedOptions[0].dataset.path : ''
-          const targetPath = selectedPath || `~/${targetName}`
-          if (customName) {
-            const addRes = await fetch(ADD_WORKSPACE_ROUTE, {
-              method: 'POST',
-              headers: { 'Content-Type': 'application/json' },
-              body: JSON.stringify({ host, name: customName }),
-            })
-            const addData = await parseJsonResponse(addRes)
-            if (!addRes.ok || !addData || !addData.ok) {
-              const err = addData?.message || addData?.error || '创建目录失败'
-              wsFeedback.className = 'dsh-popover-feedback dsh-feedback-error'
-              wsFeedback.textContent = err
-              showRemoteToast(err, 'error')
-              createBtn.disabled = false
-              return
-            }
-          } else {
-            // Existing directory: register workspace and create initial session
-            const regRes = await fetch('/remote-ssh/register-workspace', {
-              method: 'POST',
-              headers: { 'Content-Type': 'application/json' },
-              body: JSON.stringify({ host, path: targetPath }),
-            })
-            const regData = await parseJsonResponse(regRes)
-            if (!regRes.ok || !regData || !regData.ok) {
-              const err = regData?.message || regData?.error || '注册工作区失败'
-              wsFeedback.className = 'dsh-popover-feedback dsh-feedback-error'
-              wsFeedback.textContent = err
-              showRemoteToast(err, 'error')
-              createBtn.disabled = false
-              return
-            }
+          const addRes = await fetch(ADD_WORKSPACE_ROUTE, {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({ host, name: customName }),
+          })
+          const addData = await parseJsonResponse(addRes)
+          if (!addRes.ok || !addData || !addData.ok) {
+            const err = addData?.message || addData?.error || '新建目录失败'
+            wsFeedback.className = 'dsh-popover-feedback dsh-feedback-error'
+            wsFeedback.textContent = err
+            showRemoteToast(err, 'error')
+            createBtn.disabled = false
+            return
           }
 
-          showRemoteToast(`工作区 ${targetName} 添加成功`)
+          showRemoteToast(`工作区 ${customName} 新建成功`)
           if (ctx) void reconcileRemoteSource(ctx)
           setTimeout(() => {
             cleanup()
