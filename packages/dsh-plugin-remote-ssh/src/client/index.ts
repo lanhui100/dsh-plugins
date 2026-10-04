@@ -55,6 +55,12 @@ export const SESSION_UNPIN_ROUTE = '/remote-ssh/session-unpin'
 export const SESSION_RENAME_ROUTE = '/remote-ssh/session-rename'
 
 
+/** Host route for querying remote workspaces/home directories. */
+export const REMOTE_WORKSPACES_ROUTE = '/remote-ssh/workspaces'
+
+/** Host route for creating a remote workspace directory in home directory. */
+export const ADD_WORKSPACE_ROUTE = '/remote-ssh/add-workspace'
+
 /** Remote workspace/session projection poll interval. */
 export const POLL_INTERVAL_MS = 60_000
 

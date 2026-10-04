@@ -32,6 +32,7 @@ globalThis.fetch = async (url) => {
       status: 200,
       json: async () => ({
         host: 'dev',
+        homes: [{ host: 'dev', home: '/tmp' }],
         total: 2,
         archivedSessionIds: ['session-demo-1'],
         workspaces: [{
@@ -383,7 +384,7 @@ console.log(`added sessions: ${addedSessions.length} (${addedSessions[0]?.id})`)
 
 // Workspace session list contract test: subagent sessions must NOT be in workspace view sessionIds!
 assert.deepEqual(
-  upserted[0]?.sessionIds,
+  upserted.find((v) => v.workspaceId === 'remote:/tmp/demo')?.sessionIds,
   ['session-demo-1'],
   'Workspace view sessionIds must only contain root sessions, never subagents',
 )
@@ -399,11 +400,22 @@ const rootSession = addedSessions.find((s) => s.id === 'session-demo-1')
 assert.ok(rootSession?.projections?.values?.subagentCatalog, 'Parent session must pass subagentCatalog projection')
 assert.ok(rootSession?.projections?.values?.agentTeam, 'Parent session must pass agentTeam projection')
 
-// Title format contract test: must be "<host> : <name>" without "远程".
+// Remote host-root folder contract: the host mounts as a first-level folder
+// (server icon + truncated host name) whose path is the remote home, so the
+// official workspace-tree grouping nests every workspace beneath it.
+const hostRootView = upserted.find((v) => v.workspaceId === 'remote:dev:hostroot')
+assert.ok(hostRootView, 'Remote host-root workspace must be upserted (workspaceId "remote:dev:hostroot")')
+assert.equal(hostRootView.path, '/tmp', 'Host-root path must be the remote home directory')
+assert.equal(hostRootView.title, 'dev', 'Host-root title must be the (truncated) host alias, not "<host> : <name>"')
+assert.deepEqual(hostRootView.sessionIds, [], 'Host-root folder must carry no direct sessions')
+
+const workspaceView = upserted.find((v) => v.workspaceId === 'remote:/tmp/demo')
+// Title format contract test: workspace folder must be the plain directory name,
+// with the host identity living on its own first-level host-root folder.
 assert.equal(
-  upserted[0]?.title,
-  'dev : demo',
-  'Remote workspace title must strictly match "<host> : <name>" format without "远程"',
+  workspaceView?.title,
+  'demo',
+  'Remote workspace title must strictly match the workspace folder name without any host prefix',
 )
 
 // Archived session contract test: remote archived session must be merged into official archivedSessionIds.

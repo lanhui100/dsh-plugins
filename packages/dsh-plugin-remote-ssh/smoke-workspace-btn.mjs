@@ -448,7 +448,7 @@ assert.ok(addRemoteBtnIndex < searchSlotIndex, 'Add Remote button must be positi
 assert.equal(addRemoteBtn.getAttribute('title'), null, 'Add Remote button must not use a native title attribute')
 assert.equal(addRemoteBtn.title, undefined, 'Add Remote button must not use a native title property')
 assert.ok(addRemoteBtn.getAttribute('aria-label'), 'Add Remote button must keep an aria-label')
-assert.equal(addRemoteBtn.getAttribute('aria-label'), '添加远程工作区')
+assert.equal(addRemoteBtn.getAttribute('aria-label'), '添加远程主机')
 
 // 2c. Regression guard: reposition must tolerate a real-browser HTMLCollection
 // (element.children has no Array methods). Pinning the Array.from fix so a
@@ -569,7 +569,7 @@ await new Promise((resolve) => setTimeout(resolve, 560))
 const tooltip = doc.querySelector('.dsh-remote-tooltip')
 assert.ok(tooltip, 'Official-style tooltip bubble must appear after the hover delay')
 assert.equal(tooltip.getAttribute('role'), 'tooltip', 'Tooltip must carry role="tooltip"')
-assert.ok(tooltip.textContent.includes('添加远程工作区'), 'Tooltip must show the button label')
+assert.ok(tooltip.textContent.includes('添加远程主机'), 'Tooltip must show the button label')
 addRemoteBtn.dispatchEvent({ type: 'mouseleave', target: addRemoteBtn, stopPropagation() {} })
 assert.equal(doc.querySelector('.dsh-remote-tooltip'), null, 'Tooltip must withdraw on mouse leave')
 

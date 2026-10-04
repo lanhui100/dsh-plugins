@@ -43,6 +43,8 @@ window.__ModuleLoader__.load({
     const AVAILABLE_HOSTS_ROUTE = '/remote-ssh/available-hosts'
     const ADD_HOST_ROUTE = '/remote-ssh/add-host'
     const REMOVE_HOST_ROUTE = '/remote-ssh/remove-host'
+    const REMOTE_WORKSPACES_ROUTE = '/remote-ssh/workspaces'
+    const ADD_WORKSPACE_ROUTE = '/remote-ssh/add-workspace'
     /** Refresh the remote workspace/session projection this often (ms). */
     const POLL_INTERVAL_MS = 60_000
 
@@ -215,8 +217,8 @@ window.__ModuleLoader__.load({
           workspaces.removedIds.delete(view.workspaceId)
         }
       }
-      for (const view of cachedWorkspaceViews) {
-        workspaces.upsertView(view)
+      for (let i = cachedWorkspaceViews.length - 1; i >= 0; i--) {
+        workspaces.upsertView(cachedWorkspaceViews[i])
       }
     }
 
@@ -341,8 +343,48 @@ window.__ModuleLoader__.load({
       sessionParents.clear()
     }
 
+    /**
+     * Ensure DeepSeek Harness is operating in "workspace-tree" grouping mode,
+     * which activates DSH's native path-prefix nesting (nestWorkspaces: true).
+     * This puts remote workspaces inside their host-root folder automatically.
+     */
+    function ensureWorkspaceTreeMode(ctx) {
+      if (typeof localStorage !== 'undefined') {
+        try {
+          const VIEW_KEY = 'dsh.workspace.view.v5'
+          const raw = localStorage.getItem(VIEW_KEY)
+          let state = raw ? JSON.parse(raw) : {}
+          if (!state || typeof state !== 'object') state = {}
+          if (state.groupBy !== 'workspace-tree') {
+            state.groupBy = 'workspace-tree'
+            localStorage.setItem(VIEW_KEY, JSON.stringify(state))
+          }
+        } catch {}
+      }
+
+      try {
+        const slots = ctx && ctx.slots
+        if (slots && typeof slots.entries === 'function') {
+          const entries = slots.entries('sidebar.workspaces')
+          for (const entry of entries) {
+            const store = entry && entry.options && entry.options.store
+            if (store && typeof store.create === 'function') {
+              const inst = store.create()
+              if (inst && inst.actions && typeof inst.actions.setGroupBy === 'function') {
+                const current = typeof inst.getSnapshot === 'function' ? inst.getSnapshot() : null
+                if (current && current.groupBy !== 'workspace-tree') {
+                  inst.actions.setGroupBy('workspace-tree')
+                }
+              }
+            }
+          }
+        }
+      } catch {}
+    }
+
     /** Pull the remote snapshot and publish it into the official client models. */
     async function reconcileRemoteSource(ctx) {
+      ensureWorkspaceTreeMode(ctx)
       let response
       try {
         response = await fetch(SESSIONS_ROUTE, { headers: { accept: 'application/json' } })
@@ -359,7 +401,6 @@ window.__ModuleLoader__.load({
       const nextSessionIds = new Set()
       const nextWorkspaceViews = new Map()
       const nextSessions = []
-      const displayHost = formatHostLabel(body.host)
 
       // Store remote archived and pinned sessions
       remoteArchivedSessionIds = new Set(
@@ -377,30 +418,76 @@ window.__ModuleLoader__.load({
         }
       }
 
+      // Register one collapsed host-root folder per connected host (path = remote
+      // home), so the official workspace-tree grouping nests every workspace beneath
+      // its host: host (server icon + truncated name) -> workspace (folder + name) -> sessions.
+      const homes = Array.isArray(body.homes) && body.homes.length > 0
+        ? body.homes
+        : (Array.isArray(body.hosts) ? body.hosts.map((h) => ({ host: h, home: body.home || '~' })) : [])
+
+      if (homes.length === 0 && body.host) {
+        homes.push({ host: body.host, home: body.home || '~' })
+      }
+
+      const activeHosts = new Set()
+      for (const item of homes) {
+        const host = typeof item.host === 'string' ? item.host.trim() : ''
+        if (!host) continue
+        activeHosts.add(host)
+        const home = typeof item.home === 'string' && item.home ? item.home : '~'
+        const hostRootId = `remote:${host}:hostroot`
+        nextWorkspaceViews.set(hostRootId, {
+          workspaceId: hostRootId,
+          path: home,
+          title: formatHostLabel(host),
+          sessionIds: [],
+          createdAt: undefined,
+          updatedAt: new Date().toISOString(),
+        })
+      }
+
       for (const ws of body.workspaces) {
         if (!ws || typeof ws.cwd !== 'string') continue
-        // Root workspace view only lists direct sessions (subagents excluded)
-        const sessionIds = (ws.sessions || []).map((s) => String(s.sessionId))
-        const workspaceId = ws.workspaceId || `remote:${ws.cwd}`
-        let itemHost = displayHost
         if (typeof ws.workspaceId === 'string' && ws.workspaceId.startsWith('remote:')) {
           const parts = ws.workspaceId.split(':')
           if (parts.length >= 3) {
-            itemHost = formatHostLabel(decodeURIComponent(parts[1]))
+            const h = decodeURIComponent(parts[1])
+            if (h) activeHosts.add(h)
           }
         }
+        // Root workspace view only lists direct sessions (subagents excluded)
+        const sessionIds = (ws.sessions || []).map((s) => String(s.sessionId))
+        const workspaceId = ws.workspaceId || `remote:${ws.cwd}`
         const cleanName = ws.name ? ws.name.replace(/^\[[^\]]+\]\s*/, '') : ''
-        // Format: <远程主机名> : <工作区文件夹名称> (no "远程" word)
-        const title = `${itemHost} : ${cleanName}`
         nextWorkspaceViews.set(workspaceId, {
           workspaceId,
           path: ws.cwd,
-          title,
+          title: cleanName || '未知工作区',
           sessionIds,
           createdAt: new Date().toISOString(),
           updatedAt: new Date().toISOString(),
         })
       }
+      // Discover local workspaces from ctx.workspaces.list and register a "本地" host root
+      // so all local workspaces are neatly nested under [本地] fold menu just like remote hosts.
+      const allItems = (workspaces && Array.isArray(workspaces.items)) ? workspaces.items : []
+      const localWorkspaces = allItems.filter((it) => it && it.workspaceId && !isRemoteStateId(it.workspaceId) && !it.workspaceId.endsWith(':hostroot'))
+      if (localWorkspaces.length > 0) {
+        const firstLocalPath = localWorkspaces[0]?.path || ''
+        const driveMatch = firstLocalPath.match(/^([A-Za-z]:[/\\])/)
+        const localDriveRoot = driveMatch ? driveMatch[1].replace(/\\/g, '/') : (firstLocalPath.startsWith('/') ? '/' : 'C:/')
+        const localHostRootId = 'local:hostroot'
+        nextWorkspaceViews.set(localHostRootId, {
+          workspaceId: localHostRootId,
+          path: localDriveRoot,
+          title: '本地',
+          sessionIds: [],
+          createdAt: undefined,
+          updatedAt: new Date().toISOString(),
+        })
+      }
+
+      syncHostFoldingStyles(['local', ...activeHosts])
 
       // Populate full session list into ctx.sessions (including subagents and projections)
       const sourceSessions = allSessions.length > 0
@@ -474,8 +561,8 @@ window.__ModuleLoader__.load({
             workspaces.removedIds.delete(wid)
           }
         }
-        for (const view of cachedWorkspaceViews) {
-          workspaces.upsertView(view)
+        for (let i = cachedWorkspaceViews.length - 1; i >= 0; i--) {
+          workspaces.upsertView(cachedWorkspaceViews[i])
         }
       }
 
@@ -1389,31 +1476,143 @@ window.__ModuleLoader__.load({
         tag = document.createElement('style')
         tag.id = STYLE_TAG_ID
         tag.textContent = `
-          div[data-row-key^="workspace:remote:"] span[class*="folder"] {
+          /* Level 1: Remote Host Header Row */
+          div[data-row-key$=":hostroot"] {
+            gap: 6px !important;
+            cursor: pointer !important;
+          }
+          /* Ensure the collapse chevron is on the FAR LEFT (Slot 1), always visible */
+          div[data-row-key$=":hostroot"] span[class*="chevron"] {
+            display: inline-flex !important;
+            order: 1 !important;
+            width: 16px !important;
+            height: 20px !important;
+            color: var(--dsw-alias-label-tertiary, #94a3b8) !important;
+          }
+          /* Ensure the host server icon is in the MIDDLE (Slot 2), always visible, neutral color (not blue) */
+          div[data-row-key$=":hostroot"] span[class*="folder"] {
+            display: inline-flex !important;
+            order: 2 !important;
+            width: 16px !important;
+            height: 20px !important;
+            color: var(--dsw-alias-label-secondary, #64748b) !important;
+          }
+          /* Hide the default folder SVG inside hostroot */
+          div[data-row-key$=":hostroot"] span[class*="folder"] > svg {
+            display: none !important;
+          }
+          /* Remote host icon (server rack) - neutral color */
+          div[data-row-key^="workspace:remote:"][data-row-key$=":hostroot"] span[class*="folder"]::after {
+            content: '' !important;
+            display: inline-block !important;
+            width: 15px !important;
+            height: 15px !important;
+            background-color: currentColor !important;
+            -webkit-mask: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 16 16' fill='none' stroke='black' stroke-width='1.3'%3E%3Crect x='2' y='2' width='12' height='5' rx='1.2'/%3E%3Ccircle cx='4.5' cy='4.5' r='0.8' fill='black'/%3E%3Ccircle cx='7' cy='4.5' r='0.8' fill='black'/%3E%3Crect x='2' y='9' width='12' height='5' rx='1.2'/%3E%3Ccircle cx='4.5' cy='11.5' r='0.8' fill='black'/%3E%3Ccircle cx='7' cy='11.5' r='0.8' fill='black'/%3E%3C/svg%3E") no-repeat center / contain !important;
+            mask: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 16 16' fill='none' stroke='black' stroke-width='1.3'%3E%3Crect x='2' y='2' width='12' height='5' rx='1.2'/%3E%3Ccircle cx='4.5' cy='4.5' r='0.8' fill='black'/%3E%3Ccircle cx='7' cy='4.5' r='0.8' fill='black'/%3E%3Crect x='2' y='9' width='12' height='5' rx='1.2'/%3E%3Ccircle cx='4.5' cy='11.5' r='0.8' fill='black'/%3E%3Ccircle cx='7' cy='11.5' r='0.8' fill='black'/%3E%3C/svg%3E") no-repeat center / contain !important;
+          }
+
+          /* Local host icon (computer monitor) - neutral color */
+          div[data-row-key="workspace:local:hostroot"] span[class*="folder"]::after {
+            content: '' !important;
+            display: inline-block !important;
+            width: 15px !important;
+            height: 15px !important;
+            background-color: currentColor !important;
+            -webkit-mask: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 16 16' fill='none' stroke='black' stroke-width='1.3'%3E%3Crect x='2' y='2.5' width='12' height='8' rx='1.2'/%3E%3Cpath d='M6 13.5h4M8 10.5v3' stroke='black' stroke-linecap='round'/%3E%3C/svg%3E") no-repeat center / contain !important;
+            mask: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 16 16' fill='none' stroke='black' stroke-width='1.3'%3E%3Crect x='2' y='2.5' width='12' height='8' rx='1.2'/%3E%3Cpath d='M6 13.5h4M8 10.5v3' stroke='black' stroke-linecap='round'/%3E%3C/svg%3E") no-repeat center / contain !important;
+          }
+          /* Host title placed on the RIGHT (Slot 3) */
+          div[data-row-key$=":hostroot"] span[class*="projectText"] {
+            order: 3 !important;
+          }
+          div[data-row-key$=":hostroot"] span[class*="title"] {
+            font-weight: 600 !important;
+            color: var(--dsw-alias-label-primary, inherit) !important;
+          }
+          /* Hide the actions menu on hostroot row (no rename/delete workspace on host) */
+          div[data-row-key$=":hostroot"] span[class*="rowActions"] {
+            display: none !important;
+          }
+
+          /* Workspaces and sessions: enforce 8px left alignment with NO left indent */
+          div[data-row-key^="workspace:"]:not([data-row-key$=":hostroot"]) {
+            --dsh-workspace-indent: 0px !important;
+            padding-inline-start: 8px !important;
+          }
+          div[class*="groupSection"]:has(div[data-row-key^="workspace:"]:not([data-row-key$=":hostroot"])) div[data-row-key^="session:"] {
+            --dsh-workspace-indent: 0px !important;
+            padding-inline-start: 8px !important;
+          }
+
+          /* Level 2: Remote workspace folder icon with miniature blue globe badge on bottom-left */
+          div[data-row-key^="workspace:remote:"]:not([data-row-key$=":hostroot"]) span[class*="folder"] {
             position: relative !important;
           }
-          div[data-row-key^="workspace:remote:"] span[class*="folder"]::after {
+          div[data-row-key^="workspace:remote:"]:not([data-row-key$=":hostroot"]) span[class*="folder"]::after {
             content: '';
             position: absolute;
-            bottom: -1px;
-            right: -2px;
-            width: 8px;
-            height: 8px;
-            border-radius: 50%;
-            background-color: var(--dsw-alias-color-brand-default, #2563eb);
-            background-image: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 10 10' fill='white'%3E%3Cpath d='M2 5.5a3 3 0 0 1 6 0H2z'/%3E%3Ccircle cx='5' cy='7.5' r='1'/%3E%3C/svg%3E");
-            background-size: 6px 6px;
+            bottom: 0px;
+            left: -2px;
+            width: 9px;
+            height: 9px;
+            background-image: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 12 12' fill='none'%3E%3Ccircle cx='6' cy='6' r='5' fill='%232563eb' stroke='%23ffffff' stroke-width='1'/%3E%3Cellipse cx='6' cy='6' rx='2.3' ry='5' stroke='%23ffffff' stroke-width='0.8'/%3E%3Cline x1='1' y1='6' x2='11' y2='6' stroke='%23ffffff' stroke-width='0.8'/%3E%3C/svg%3E");
+            background-size: contain;
             background-repeat: no-repeat;
             background-position: center;
-            border: 1.5px solid var(--dsw-alias-bg-canvas, #ffffff);
-            box-shadow: 0 0 2px rgba(0, 0, 0, 0.25);
             pointer-events: none;
             z-index: 2;
           }
-          .dsh-remote-host-prefix {
-            font-weight: 700 !important;
+
+          /* Level 3: Session title aligns pixel-perfect with workspace title (matching 6px gap) */
+          div[class*="groupSection"]:has(div[data-row-key^="workspace:"]:not([data-row-key$=":hostroot"])) div[data-row-key^="session:"] span[class*="title"] {
+            margin-left: 6px !important;
+          }
+
+          /* Fold remote workspaces when their hostroot is collapsed (aria-expanded !== "true") */
+          div[class*="groupSection"]:has(div[data-row-key$=":hostroot"]:not([aria-expanded="true"])) ~ div[class*="groupSection"]:has(div[data-row-key^="workspace:"]:not([data-row-key$=":hostroot"])),
+          div:has(> div[data-row-key$=":hostroot"]:not([aria-expanded="true"])) ~ div:has(> div[data-row-key^="workspace:"]:not([data-row-key$=":hostroot"])) {
+            display: none !important;
+          }
+
+          /* Sidebar Nav Panel Row Button: matches 插件 and 自动化任务 buttons */
+          .dsh-panel-row-btn {
+            box-sizing: border-box;
+            border-radius: var(--dsw-radius-md, 8px);
+            min-height: 36px;
+            width: calc(100% - 4px);
             color: var(--dsw-alias-label-primary, inherit);
-            margin-right: 2px;
+            font: inherit;
+            text-align: left;
+            cursor: pointer;
+            background: 0 0;
+            border: none;
+            align-items: center;
+            gap: 8px;
+            margin: 0 2px 2px;
+            padding: 7px 8px;
+            line-height: 22px;
+            display: flex;
+            transition: background-color 120ms ease;
+            user-select: none;
+          }
+          .dsh-panel-row-btn:hover {
+            background: var(--dsw-alias-interactive-bg-hover, rgba(0, 0, 0, 0.05));
+          }
+          .dsh-panel-row-glyph {
+            flex: none;
+            justify-content: center;
+            align-items: center;
+            display: inline-flex;
+            color: var(--dsw-alias-label-secondary, #64748b);
+          }
+          .dsh-panel-row-title {
+            text-overflow: ellipsis;
+            white-space: nowrap;
+            min-width: 0;
+            overflow: hidden;
+            font-size: 14px;
+            color: var(--dsw-alias-label-primary, inherit);
           }
           /* Question composer container and card (1:1 with official QuestionComposer) */
           .dsh-remote-question-frame {
@@ -2076,7 +2275,7 @@ window.__ModuleLoader__.load({
             }
           }
 
-          /* Official-style success Toast (mirrors Toast.module.css tokens) */
+          /* Official-style success/error Toast (mirrors Toast.module.css tokens) */
           .dsh-remote-toast {
             position: fixed;
             top: 40px;
@@ -2108,6 +2307,9 @@ window.__ModuleLoader__.load({
           }
           .dsh-remote-toast-icon--success {
             color: var(--dsw-alias-state-success-primary, #10b981);
+          }
+          .dsh-remote-toast-icon--error {
+            color: var(--dsw-alias-state-error-primary, #ef4444);
           }
           .dsh-remote-toast-text {
             min-width: 0;
@@ -2143,22 +2345,50 @@ window.__ModuleLoader__.load({
       return () => {
         const el = (typeof document.getElementById === 'function' ? document.getElementById(STYLE_TAG_ID) : null) || document.querySelector?.(`#${STYLE_TAG_ID}`)
         if (el) el.remove()
+        const foldingEl = (typeof document.getElementById === 'function' ? document.getElementById(FOLDING_STYLE_ID) : null) || document.querySelector?.(`#${FOLDING_STYLE_ID}`)
+        if (foldingEl) foldingEl.remove()
       }
     }
 
-    function decorateRemoteTitles() {
+    const FOLDING_STYLE_ID = 'dsh-remote-hosts-folding-style'
+
+    /**
+     * Generate pure CSS rules that hide remote workspaces under collapsed hosts.
+     * When hostroot has aria-expanded !== "true" (i.e. collapsed or default),
+     * subsequent sibling sections belonging to that host are set to display: none.
+     * Purely declarative — React DOM is NEVER mutated during toggle/render.
+     */
+    function syncHostFoldingStyles(hosts) {
       if (typeof document === 'undefined') return
-      const rows = document.querySelectorAll('div[data-row-key^="workspace:remote:"]')
+      let tag = document.getElementById(FOLDING_STYLE_ID)
+      if (!tag) {
+        tag = document.createElement('style')
+        tag.id = FOLDING_STYLE_ID
+        document.head.appendChild(tag)
+      }
+      const rules = hosts.map((h) => `
+        div[class*="groupSection"]:has(div[data-row-key="workspace:remote:${h}:hostroot"]:not([aria-expanded="true"])) ~ div[class*="groupSection"]:has(div[data-row-key^="workspace:remote:${h}:"]:not([data-row-key$=":hostroot"])),
+        div:has(> div[data-row-key="workspace:remote:${h}:hostroot"]:not([aria-expanded="true"])) ~ div:has(> div[data-row-key^="workspace:remote:${h}:"]:not([data-row-key$=":hostroot"])) {
+          display: none !important;
+        }
+      `).join('\n')
+      tag.textContent = rules
+    }
+
+    /**
+     * Decorate first-level host-root rows: surface the full host alias in the title tooltip.
+     * The server icon is rendered via CSS ::after mask — no DOM nodes inside React-managed
+     * elements are touched, preventing React removeChild crashes on toggle.
+     */
+    function decorateHostRoots() {
+      if (typeof document === 'undefined') return
+      const rows = document.querySelectorAll('div[data-row-key$=":hostroot"]')
       for (const row of rows) {
         const titleEl = row.querySelector('span[class*="title"]')
-        if (!titleEl || titleEl.dataset.remoteDecorated === 'true') continue
-        const text = titleEl.textContent || ''
-        const colonIdx = text.indexOf(' : ')
-        if (colonIdx !== -1) {
-          const host = text.slice(0, colonIdx)
-          const rest = text.slice(colonIdx + 3)
-          titleEl.dataset.remoteDecorated = 'true'
-          titleEl.innerHTML = `<strong class="dsh-remote-host-prefix">${escapeHtml(host)}</strong> : ${escapeHtml(rest)}`
+        if (titleEl && !titleEl.title) {
+          const key = row.getAttribute('data-row-key') || ''
+          const match = key.match(/^workspace:remote:([^:]+):hostroot$/)
+          if (match) titleEl.setAttribute('title', `远程主机: ${match[1]}`)
         }
       }
     }
@@ -2375,6 +2605,11 @@ window.__ModuleLoader__.load({
       return document.querySelector('.WorkspaceBrowser_searchSlot') || null
     }
 
+    function findSidebarPanelList() {
+      if (typeof document === 'undefined') return null
+      return document.querySelector('nav[class*="panelList"]') || null
+    }
+
     function findWorkspaceHeaderActions() {
       if (typeof document === 'undefined') return null
       const header = findWorkspaceSectionHeader()
@@ -2383,18 +2618,27 @@ window.__ModuleLoader__.load({
     }
 
     /**
-     * Pin the add-remote button to the expected slot: immediately left of the
-     * search icon in the wide header, or as the leftmost action of the
-     * right-aligned header actions group in the rail header. Repositions when
-     * the official header re-renders (wide <-> rail toggles swap children).
-     * @returns true when the button is (or gets) attached to the header.
+     * Place the add-remote host button in the sidebar nav list (matching 插件 and 自动化任务 buttons),
+     * or fallback to the workspace sectionHeader if panelList is not available.
+     * @returns true when the button is attached.
      */
     function repositionWorkspaceAddButton(btn) {
       if (typeof document === 'undefined' || !btn) return false
+      const panelList = findSidebarPanelList()
+      if (panelList) {
+        if (btn.parentElement !== panelList) {
+          panelList.appendChild(btn)
+        }
+        return true
+      }
+
       const searchSlot = findWorkspaceSearchSlot()
       const headerActions = findWorkspaceHeaderActions()
       const header = findWorkspaceSectionHeader()
       if (!header) return false
+
+      // In wide header mode: place immediately before searchSlot so it aligns seamlessly
+      // in the right-aligned action icon row with search, options, and add-workspace.
       if (searchSlot && searchSlot.parentElement && searchSlot.parentElement === header) {
         const children = Array.from(header.children)
         const slotIdx = children.indexOf(searchSlot)
@@ -2404,12 +2648,15 @@ window.__ModuleLoader__.load({
         }
         return true
       }
+
+      // In rail header mode: place in headerActions cluster
       if (headerActions) {
         if (headerActions.children[0] !== btn) {
           headerActions.insertBefore(btn, headerActions.firstChild || null)
         }
         return true
       }
+
       if (header.children[header.children.length - 1] !== btn) header.appendChild(btn)
       return true
     }
@@ -2437,8 +2684,8 @@ window.__ModuleLoader__.load({
     /** Disconnected state: the same horizontal plug is pulled clear of the socket; no slash. */
     const DISCONNECT_ICON_SVG = '<svg width="16" height="16" viewBox="0 0 16 16" fill="none" xmlns="http://www.w3.org/2000/svg" aria-hidden="true"><path d="M0.75 8h1.5" stroke="currentColor" stroke-width="1.3" stroke-linecap="round"/><rect x="2.25" y="4.5" width="3" height="7" rx="1" stroke="currentColor" stroke-width="1.2"/><path d="M5.25 6h1.5M5.25 10h1.5" stroke="currentColor" stroke-width="1.2" stroke-linecap="round"/><rect x="10" y="3.5" width="3.5" height="9" rx="1.2" stroke="currentColor" stroke-width="1.2"/><path d="M13.5 8h1.75" stroke="currentColor" stroke-width="1.3" stroke-linecap="round"/></svg>'
 
-    /** Official `IconCheckCircleOutlineRegular` artwork, used by the success toast. */
     const TOAST_SUCCESS_ICON_SVG = '<svg width="16" height="16" viewBox="0 0 16 16" fill="none" xmlns="http://www.w3.org/2000/svg" aria-hidden="true"><path d="M12.5303 6.53027L8.80273 10.2578C8.54967 10.5109 8.31796 10.7439 8.10645 10.9141C7.88375 11.0932 7.616 11.2602 7.27344 11.3145C7.09229 11.3431 6.90771 11.3431 6.72656 11.3145C6.384 11.2602 6.11625 11.0932 5.89355 10.9141C5.68204 10.7439 5.45033 10.5109 5.19727 10.2578L3.46973 8.53027L4.53027 7.46973L6.25781 9.19727C6.53457 9.47402 6.70036 9.63859 6.83398 9.74609C6.95637 9.84453 6.98241 9.83644 6.96094 9.83301C6.98679 9.83709 7.01321 9.83709 7.03906 9.83301C7.01759 9.83644 7.04363 9.84453 7.16602 9.74609C7.29964 9.63859 7.46543 9.47402 7.74219 9.19727L11.4697 5.46973L12.5303 6.53027Z" fill="currentColor"/><path d="M14.5996 8C14.5996 4.35492 11.6451 1.40039 8 1.40039C4.35492 1.40039 1.40039 4.35492 1.40039 8C1.40039 11.6451 4.35492 14.5996 8 14.5996C11.6451 14.5996 14.5996 11.6451 14.5996 8ZM15.9004 8C15.9004 12.363 12.363 15.9004 8 15.9004C3.63695 15.9004 0.0996094 12.363 0.0996094 8C0.0996094 3.63695 3.63695 0.0996094 8 0.0996094C12.363 0.0996094 15.9004 3.63695 15.9004 8Z" fill="currentColor"/></svg>'
+    const TOAST_ERROR_ICON_SVG = '<svg width="16" height="16" viewBox="0 0 16 16" fill="none" xmlns="http://www.w3.org/2000/svg" aria-hidden="true"><path d="M8 1.4A6.6 6.6 0 1 0 14.6 8 6.61 6.61 0 0 0 8 1.4zM8 0a8 8 0 1 1-8 8 8 8 0 0 1 8-8zm.75 4.5v4.5h-1.5V4.5zm0 6v1.5h-1.5v-1.5z" fill="currentColor"/></svg>'
 
     /**
      * Vanilla replica of the official Tooltip (side "bottom", hover delay 500ms):
@@ -2581,7 +2828,7 @@ window.__ModuleLoader__.load({
      * look using the same design tokens and keyframe values.
      * @param text - the toast copy.
      */
-    function showRemoteToast(text) {
+    function showRemoteToast(text, type = 'success') {
       if (typeof document === 'undefined') return
       const existing = document.querySelectorAll('.dsh-remote-toast')
       const toast = document.createElement('div')
@@ -2590,9 +2837,9 @@ window.__ModuleLoader__.load({
       toast.style['--dsh-toast-hold'] = `${TOAST_HOLD_MS}ms`
       toast.style.top = `${TOAST_TOP_PX + existing.length * 8}px`
       const icon = document.createElement('span')
-      icon.className = 'dsh-remote-toast-icon dsh-remote-toast-icon--success'
+      icon.className = `dsh-remote-toast-icon dsh-remote-toast-icon--${type === 'error' ? 'error' : 'success'}`
       icon.setAttribute('aria-hidden', 'true')
-      icon.innerHTML = TOAST_SUCCESS_ICON_SVG
+      icon.innerHTML = type === 'error' ? TOAST_ERROR_ICON_SVG : TOAST_SUCCESS_ICON_SVG
       const textEl = document.createElement('span')
       textEl.className = 'dsh-remote-toast-text'
       textEl.textContent = text
@@ -2794,6 +3041,158 @@ window.__ModuleLoader__.load({
         }
         body.appendChild(connectedSec.sectionEl)
 
+        // --- Add Remote Workspace Section ---
+        if (connectedHosts.length > 0) {
+          const wsSec = createSection('添加远程工作区', 'workspaces')
+          const wsForm = document.createElement('div')
+          wsForm.style.display = 'flex'
+          wsForm.style.flexDirection = 'column'
+          wsForm.style.gap = '8px'
+          wsForm.style.marginTop = '4px'
+          wsForm.style.padding = '8px'
+          wsForm.style.background = 'var(--dsw-alias-bg-module-platform, rgba(0, 0, 0, 0.03))'
+          wsForm.style.borderRadius = 'var(--dsw-radius-md, 8px)'
+
+          const selectRow = document.createElement('div')
+          selectRow.style.display = 'flex'
+          selectRow.style.gap = '6px'
+
+          const hostSelect = document.createElement('select')
+          hostSelect.className = 'dsh-remote-host-select'
+          hostSelect.style.height = '30px'
+          hostSelect.style.fontSize = '12px'
+          for (const h of connectedHosts) {
+            const opt = document.createElement('option')
+            opt.value = h.host
+            opt.textContent = h.host
+            hostSelect.appendChild(opt)
+          }
+
+          const dirSelect = document.createElement('select')
+          dirSelect.className = 'dsh-remote-host-select'
+          dirSelect.style.height = '30px'
+          dirSelect.style.fontSize = '12px'
+          dirSelect.style.flex = '1'
+
+          const updateDirOptions = async () => {
+            dirSelect.innerHTML = '<option value="">正在读取 ~/ 目录...</option>'
+            try {
+              const res = await fetch(REMOTE_WORKSPACES_ROUTE)
+              const wsData = await parseJsonResponse(res)
+              dirSelect.innerHTML = ''
+              const host = hostSelect.value
+              const dirs = Array.isArray(wsData?.workspaces)
+                ? wsData.workspaces.filter((w) => w.host.toLowerCase() === host.toLowerCase())
+                : []
+              if (dirs.length === 0) {
+                dirSelect.innerHTML = '<option value="">~/ 下无目录</option>'
+              } else {
+                for (const d of dirs) {
+                  const opt = document.createElement('option')
+                  opt.value = d.name
+                  opt.textContent = `~/${d.name}`
+                  dirSelect.appendChild(opt)
+                }
+              }
+            } catch {
+              dirSelect.innerHTML = '<option value="">读取失败</option>'
+            }
+          }
+          hostSelect.addEventListener('change', updateDirOptions)
+          void updateDirOptions()
+
+          selectRow.appendChild(hostSelect)
+          selectRow.appendChild(dirSelect)
+          wsForm.appendChild(selectRow)
+
+          const inputRow = document.createElement('div')
+          inputRow.style.display = 'flex'
+          inputRow.style.gap = '6px'
+
+          const nameInput = document.createElement('input')
+          nameInput.type = 'text'
+          nameInput.placeholder = '或输入新建目录名 (~/xxx)'
+          nameInput.className = 'dsh-remote-host-select'
+          nameInput.style.height = '30px'
+          nameInput.style.fontSize = '12px'
+          nameInput.style.flex = '1'
+          nameInput.style.padding = '0 8px'
+
+          const createBtn = document.createElement('button')
+          createBtn.className = 'dsw-button dsw-button--primary'
+          createBtn.style.height = '30px'
+          createBtn.style.padding = '0 10px'
+          createBtn.style.fontSize = '12px'
+          createBtn.textContent = '添加/新建'
+
+          inputRow.appendChild(nameInput)
+          inputRow.appendChild(createBtn)
+          wsForm.appendChild(inputRow)
+
+          const wsFeedback = document.createElement('div')
+          wsFeedback.className = 'dsh-popover-feedback'
+          wsForm.appendChild(wsFeedback)
+
+          createBtn.addEventListener('click', async () => {
+            const host = hostSelect.value
+            const customName = nameInput.value.trim()
+            const selectedDir = dirSelect.value
+            const targetName = customName || selectedDir
+            if (!targetName) {
+              wsFeedback.className = 'dsh-popover-feedback dsh-feedback-error'
+              wsFeedback.textContent = '请选择或输入目录名'
+              return
+            }
+
+            createBtn.disabled = true
+            wsFeedback.className = 'dsh-popover-feedback'
+            wsFeedback.textContent = '正在添加工作区...'
+            try {
+              let targetPath = `~/${targetName}`
+              if (customName) {
+                const addRes = await fetch(ADD_WORKSPACE_ROUTE, {
+                  method: 'POST',
+                  headers: { 'Content-Type': 'application/json' },
+                  body: JSON.stringify({ host, name: customName }),
+                })
+                const addData = await parseJsonResponse(addRes)
+                if (!addRes.ok || !addData || !addData.ok) {
+                  const err = addData?.message || addData?.error || '创建目录失败'
+                  wsFeedback.className = 'dsh-popover-feedback dsh-feedback-error'
+                  wsFeedback.textContent = err
+                  showRemoteToast(err, 'error')
+                  createBtn.disabled = false
+                  return
+                }
+                targetPath = addData.path || targetPath
+              }
+
+              // Create initial session or register view in workspace list
+              await fetch(SESSION_CREATE_ROUTE, {
+                method: 'POST',
+                headers: { 'Content-Type': 'application/json' },
+                body: JSON.stringify({ cwd: targetPath, host }),
+              }).catch(() => {})
+
+              showRemoteToast(`工作区 ${targetName} 添加成功`)
+              if (ctx) void reconcileRemoteSource(ctx)
+              setTimeout(() => {
+                removeOutsideClickListener()
+                popover.remove()
+              }, 700)
+            } catch (err) {
+              const msg = String(err.message || err)
+              wsFeedback.className = 'dsh-popover-feedback dsh-feedback-error'
+              wsFeedback.textContent = msg
+              showRemoteToast(msg, 'error')
+              createBtn.disabled = false
+            }
+          })
+
+          wsSec.listEl.appendChild(wsForm)
+          body.appendChild(wsSec.sectionEl)
+        }
+
         // --- Available hosts: connect action ------------------------------
         const availableSec = createSection('可添加主机', 'available')
         if (availableHosts.length === 0) {
@@ -2849,13 +3248,17 @@ window.__ModuleLoader__.load({
                   }, 700)
                 } else {
                   setAddBusy(addBtn, false)
+                  const errMsg = (postData && (postData.error || postData.message)) ? `${postData.message || postData.error}` : '连接主机失败'
                   feedbackEl.className = 'dsh-popover-feedback dsh-feedback-error'
-                  feedbackEl.textContent = (postData && (postData.error || postData.message)) ? `${postData.message || postData.error}` : '连接主机失败'
+                  feedbackEl.textContent = errMsg
+                  showRemoteToast(errMsg, 'error')
                 }
               } catch (err) {
                 setAddBusy(addBtn, false)
+                const errMsg = String(err.message || err)
                 feedbackEl.className = 'dsh-popover-feedback dsh-feedback-error'
-                feedbackEl.textContent = String(err.message || err)
+                feedbackEl.textContent = errMsg
+                showRemoteToast(errMsg, 'error')
               }
             }
 
@@ -2901,16 +3304,13 @@ window.__ModuleLoader__.load({
 
       const btn = document.createElement('button')
       btn.id = 'dsh-add-remote-workspace-btn'
-      btn.className = 'dsh-btn-add-remote-workspace'
+      btn.className = 'dsh-btn-add-remote-workspace dsh-panel-row-btn'
       btn.type = 'button'
-      btn.setAttribute('aria-label', '添加远程工作区')
+      btn.setAttribute('aria-label', '添加远程主机')
 
-      btn.innerHTML = `<svg width="16" height="16" viewBox="0 0 16 16" fill="none" xmlns="http://www.w3.org/2000/svg" aria-hidden="true"><rect x="2" y="2" width="12" height="4.5" rx="1" stroke="currentColor" stroke-width="1.2"/><circle cx="4.5" cy="4.25" r="0.75" fill="currentColor"/><rect x="2" y="8" width="7" height="4.5" rx="1" stroke="currentColor" stroke-width="1.2"/><circle cx="4.5" cy="10.25" r="0.75" fill="currentColor"/><path d="M12.5 8.5V13.5M10 11H15" stroke="currentColor" stroke-width="1.3" stroke-linecap="round"/></svg>`
+      btn.innerHTML = `<span class="dsh-panel-row-glyph"><svg width="18" height="18" viewBox="0 0 16 16" fill="none" xmlns="http://www.w3.org/2000/svg" aria-hidden="true"><rect x="2" y="2" width="12" height="4.5" rx="1" stroke="currentColor" stroke-width="1.2"/><circle cx="4.5" cy="4.25" r="0.75" fill="currentColor"/><rect x="2" y="8" width="7" height="4.5" rx="1" stroke="currentColor" stroke-width="1.2"/><circle cx="4.5" cy="10.25" r="0.75" fill="currentColor"/><path d="M12.5 8.5V13.5M10 11H15" stroke="currentColor" stroke-width="1.3" stroke-linecap="round"/></svg></span><span class="dsh-panel-row-title">添加远程主机</span>`
 
-      // Official-style tooltip (side "bottom", 500ms hover delay) instead of the
-      // native `title` attribute, matching the search / view-options / add-workspace
-      // icon buttons' tooltips.
-      btn._dshTooltipDisposer = attachTooltip(btn, '添加远程工作区', { side: 'bottom', delayMs: TOOLTIP_DELAY_MS })
+      btn._dshTooltipDisposer = attachTooltip(btn, '添加远程主机', { side: 'right', delayMs: TOOLTIP_DELAY_MS })
 
       btn.addEventListener('click', (ev) => {
         if (ev && typeof ev.stopPropagation === 'function') ev.stopPropagation()
@@ -2922,12 +3322,12 @@ window.__ModuleLoader__.load({
 
     function installTitleDecorator(ctx) {
       if (typeof document === 'undefined' || typeof MutationObserver === 'undefined') return () => {}
-      decorateRemoteTitles()
+      decorateHostRoots()
       checkAndRenderActiveQuestion()
       checkAndRenderSettingsCard(ctx)
       checkAndRenderWorkspaceAddButton(ctx)
       const observer = new MutationObserver(() => {
-        decorateRemoteTitles()
+        decorateHostRoots()
         checkAndRenderActiveQuestion()
         checkAndRenderSettingsCard(ctx)
         checkAndRenderWorkspaceAddButton(ctx)
@@ -2935,10 +3335,9 @@ window.__ModuleLoader__.load({
       observer.observe(document.body, { childList: true, subtree: true })
       return () => {
         observer.disconnect()
-        const decorated = document.querySelectorAll('span[data-remote-decorated="true"]')
+        const decorated = document.querySelectorAll('div[data-row-key$=":hostroot"] span[class*="title"]')
         for (const el of decorated) {
-          el.textContent = el.textContent
-          delete el.dataset.remoteDecorated
+          el.removeAttribute('title')
         }
         removeQuestionCard()
         removeSettingsCard()
@@ -2953,6 +3352,7 @@ window.__ModuleLoader__.load({
      * @param ctx - client plugin context with the injected service edges.
      */
     function apply(ctx) {
+      ensureWorkspaceTreeMode(ctx)
       const restoreProxy = installSessionProxy(ctx)
       const restoreGuardian = installWorkspaceGuardian(ctx)
       const restoreStyles = installStyles()

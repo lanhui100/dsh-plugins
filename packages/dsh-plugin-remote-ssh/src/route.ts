@@ -65,7 +65,13 @@ export const ADD_HOST_ROUTE = '/remote-ssh/add-host'
 export const REMOVE_HOST_ROUTE = '/remote-ssh/remove-host'
 
 
-/** The slice of the host web server this module registers against. */
+/** Absolute pathname for listing remote user's home directories. */
+export const REMOTE_WORKSPACES_ROUTE = '/remote-ssh/workspaces'
+
+/** Absolute pathname for creating a remote user's home directory workspace. */
+export const ADD_WORKSPACE_ROUTE = '/remote-ssh/add-workspace'
+
+
 export interface WebServerLike {
   register(route: {
     readonly kind: 'exact' | 'prefix'
@@ -156,6 +162,57 @@ export function registerRemoteSshRoute(
   ctx.inject(['webServer'], (scoped) => {
     scoped.effect(() => scoped.webServer.register({
       kind: 'exact',
+      path: REMOTE_WORKSPACES_ROUTE,
+      handler: async (_req, res) => {
+        if (!isManager) {
+          sendJson(res, 400, { error: 'not-supported', message: 'Multi-host manager is not active in this runtime.' })
+          return
+        }
+        try {
+          const manager = managerOrGetCaller as RemoteHostManager
+          const rows: Array<{ host: string; name: string; path: string }> = []
+          for (const host of manager.getHostNames()) {
+            if (!manager.getCallerForHost(host)) continue
+            const dirs = await manager.listHomeDirectories(host)
+            for (const dir of dirs) rows.push({ host, name: dir.name, path: dir.path })
+          }
+          sendJson(res, 200, { workspaces: rows })
+        } catch (error) {
+          sendJson(res, 502, { error: 'remote-unavailable', message: error instanceof Error ? error.message : String(error) })
+        }
+      },
+    }), 'remote-ssh: workspaces route')
+
+    scoped.effect(() => scoped.webServer.register({
+      kind: 'exact',
+      path: ADD_WORKSPACE_ROUTE,
+      handler: async (req, res) => {
+        if (!isManager) {
+          sendJson(res, 400, { error: 'not-supported', message: 'Multi-host manager is not active in this runtime.' })
+          return
+        }
+        try {
+          const body = await readJsonBody(req)
+          const host = typeof body.host === 'string' ? body.host.trim() : ''
+          const name = typeof body.name === 'string' ? body.name.trim() : ''
+          if (!host || !name) {
+            sendJson(res, 400, { error: 'missing-fields', message: 'Fields "host" and "name" are required.' })
+            return
+          }
+          const manager = managerOrGetCaller as RemoteHostManager
+          if (!manager.getHostNames().some((item) => item.toLowerCase() === host.toLowerCase())) {
+            sendJson(res, 400, { error: 'invalid-host', message: `Host "${host}" is not registered.` })
+            return
+          }
+          const result = await manager.createHomeDirectory(host, name)
+          sendJson(res, 200, { ok: true, host, name: result.name, path: result.path })
+        } catch (error) {
+          sendJson(res, 400, { error: 'create-failed', message: error instanceof Error ? error.message : String(error) })
+        }
+      },
+    }), 'remote-ssh: add workspace route')
+    scoped.effect(() => scoped.webServer.register({
+      kind: 'exact',
       path: SESSIONS_ROUTE,
       handler: async (_req, res) => {
         if (isManager) {
@@ -187,7 +244,16 @@ export function registerRemoteSshRoute(
                 : undefined
 
               void caller.ensureEventsListener().catch(() => {})
+              // Resolve the remote user's home directory so the client can mount a
+              // host-root folder that nests every workspace beneath it.
+              const home = await manager.getHomeDirectory(host).catch((err: unknown) => {
+                console.warn(`remote-ssh: [${host}] home directory resolve failed:`, err)
+                return undefined
+              })
               const rawWorkspaces = groupSessionsByWorkspace(items, 50, validMap)
+              const workspaceGroups = rawWorkspaces.length > 0
+                ? rawWorkspaces
+                : [{ cwd: home !== undefined ? `${home}/unknown-workspace` : '~', name: '未知工作区', sessions: [], total: 0 }]
 
               for (const it of items) {
                 if (it.origin === 'subagent' && it.parentSessionId) {
@@ -196,7 +262,7 @@ export function registerRemoteSshRoute(
                 }
               }
 
-              const namespacedWorkspaces = rawWorkspaces.map((ws) => ({
+              const namespacedWorkspaces = workspaceGroups.map((ws) => ({
                 ...ws,
                 workspaceId: namespaceRemoteWorkspaceId(host, ws.cwd),
                 name: readyCallers.length > 1 ? `[${host}] ${ws.name}` : ws.name,
@@ -231,6 +297,7 @@ export function registerRemoteSshRoute(
 
               return {
                 host,
+                home,
                 workspaces: namespacedWorkspaces,
                 sessions: validSessions,
                 archivedSessionIds,
@@ -245,6 +312,7 @@ export function registerRemoteSshRoute(
 
             sendJson(res, 200, {
               hosts: readyCallers.map((c) => c.host),
+              homes: hostSnapshots.map((s) => ({ host: s.host, home: s.home })),
               total: aggregatedSessions.length,
               workspaces: aggregatedWorkspaces,
               sessions: aggregatedSessions,
@@ -283,7 +351,15 @@ export function registerRemoteSshRoute(
             ? new Map(baseline.items.map((it) => [it.path, { workspaceId: it.workspaceId, title: it.title }]))
             : undefined
           void caller.ensureEventsListener().catch(() => {})
+          // Resolve the remote user's home directory for the host-root folder.
+          let home: string | undefined
+          if (isManager) {
+            home = await (managerOrGetCaller as RemoteHostManager).getHomeDirectory(hostLabel || 'remote').catch(() => undefined)
+          }
           const rawWorkspaces = groupSessionsByWorkspace(items, 50, validMap)
+          const workspaceGroups = rawWorkspaces.length > 0
+            ? rawWorkspaces
+            : [{ cwd: home !== undefined ? `${home}/unknown-workspace` : '~', name: '未知工作区', sessions: [], total: 0 }]
           const archivedSessionIds = baseline?.archivedSessionIds ?? []
           const pinnedSessionIds = baseline?.pinnedSessionIds ?? []
           const source = projectRemoteSourceSnapshot(hostLabel || 'remote', items)
@@ -298,7 +374,7 @@ export function registerRemoteSshRoute(
               : it
           })
 
-          const workspaces = rawWorkspaces.map((ws) => ({
+          const workspaces = workspaceGroups.map((ws) => ({
             ...ws,
             sessions: ws.sessions.map((it) => {
               const pending = caller.getPendingInteractionsForSession(it.sessionId)
@@ -316,6 +392,7 @@ export function registerRemoteSshRoute(
 
           sendJson(res, 200, {
             host: hostLabel || 'remote',
+            home,
             total: items.length,
             workspaces,
             sessions: validSessions,
@@ -765,6 +842,17 @@ export function registerRemoteSshRoute(
           const body = await readJsonBody(req)
           const rawWorkspaceId = typeof body.workspaceId === 'string' ? body.workspaceId.trim() : undefined
           const rawCwd = typeof body.cwd === 'string' ? body.cwd.trim() : undefined
+
+          // Host-root folders are navigation containers, not real workspaces: creating a
+          // session directly on them is a UI misuse, so reject it with a clear message
+          // instead of forwarding a bogus workspaceId to the remote.
+          if (rawWorkspaceId !== undefined && rawWorkspaceId.endsWith(':hostroot')) {
+            sendJson(res, 200, {
+              ok: false,
+              error: { message: '主机根目录不是一个工作区，请展开主机后选择具体工作区新建会话。' },
+            })
+            return
+          }
 
           let host = hostLabel || 'remote'
           let targetCwd = rawCwd && rawCwd.length > 0 ? rawCwd : undefined

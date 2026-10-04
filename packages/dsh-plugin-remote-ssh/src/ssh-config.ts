@@ -34,6 +34,11 @@ export function resolveDefaultSshConfigPath(): string {
   return join(home, '.ssh', 'config')
 }
 
+export function isExcludedServiceHost(alias: string, hostName?: string): boolean {
+  const values = [alias, hostName ?? ''].map((value) => value.toLowerCase().trim())
+  return values.some((value) => value.includes('github') || value.includes('gitlab') || value.includes('gitee'))
+}
+
 /**
  * Parse an OpenSSH configuration file and extract all non-wildcard host blocks
  * that have an explicit IdentityFile specified (ready for key-based authentication).
@@ -70,7 +75,7 @@ export function parseSshConfig(filePath?: string): SshHostInfo[] {
     if (currentBlock.identityFile && currentBlock.identityFile.trim() !== '') {
       for (const alias of currentBlock.aliases) {
         // Exclude wildcard patterns
-        if (alias.includes('*') || alias.includes('?')) {
+        if (alias.includes('*') || alias.includes('?') || isExcludedServiceHost(alias, currentBlock.hostName)) {
           continue
         }
         results.push({
@@ -134,5 +139,5 @@ export function getAvailableSshHosts(options?: GetAvailableHostsOptions): SshHos
   const allHosts = parseSshConfig(options?.sshConfigPath)
   const existingSet = new Set((options?.currentHosts || []).map((h) => h.toLowerCase().trim()))
 
-  return allHosts.filter((item) => !existingSet.has(item.host.toLowerCase().trim()))
+  return allHosts.filter((item) => !existingSet.has(item.host.toLowerCase().trim()) && !isExcludedServiceHost(item.host, item.hostName))
 }

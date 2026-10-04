@@ -156,7 +156,28 @@ export class RemoteHostManager {
     return undefined
   }
 
-  /** Allocate the next unused local port (starts from highest localPort + 1). */
+  /** List remote user's home directories for workspace selection. */
+  async listHomeDirectories(host: string) {
+    const entry = this.entries.get(host)
+    if (!entry) throw new Error(`Host "${host}" is not registered in RemoteHostManager.`)
+    return this.launcher.listHomeDirectories(host)
+  }
+
+  /** Create one remote user's home directory for a workspace. */
+  async createHomeDirectory(host: string, name: string) {
+    const entry = this.entries.get(host)
+    if (!entry) throw new Error(`Host "${host}" is not registered in RemoteHostManager.`)
+    return this.launcher.createHomeDirectory(host, name)
+  }
+
+  /** Resolve a remote host's user home directory absolute path. */
+  async getHomeDirectory(host: string): Promise<string> {
+    const entry = this.entries.get(host)
+    if (!entry) throw new Error(`Host "${host}" is not registered in RemoteHostManager.`)
+    return this.launcher.homeDirectory(host)
+  }
+
+
   allocateLocalPort(): number {
     let maxPort = 39386
     for (const entry of this.entries.values()) {
@@ -215,22 +236,20 @@ export class RemoteHostManager {
   private async doStartHost(entry: ActiveHostEntry): Promise<RemoteCaller> {
     const { config } = entry
 
-    // 1. Ensure remote DSH service is active, auto-launching if needed
+    // The remote DSH process is a prerequisite, not something this plugin owns.
+    // Probe it before opening a tunnel and fail closed when it is unavailable.
     try {
       this.loggerInfo(`remote-ssh: [${config.host}] verifying remote dsh service status...`)
-      const launchRes = await this.launcher.ensureService(config.host, config.remotePort)
-      entry.autoStarted = launchRes.started === true
-      entry.harnessPath = launchRes.harnessPath
-      if (launchRes.started) {
-        this.loggerInfo(`remote-ssh: [${config.host}] dsh web was not running; auto-launched service (${launchRes.harnessPath ? `in ${launchRes.harnessPath}` : 'via PATH'})`)
+      const status = await this.launcher.checkStatus(config.host, config.remotePort)
+      if (status !== 'alive') {
+        throw new Error(`远端主机 "${config.host}" 的 dsh 服务未启动（端口 ${String(config.remotePort)} 无可用服务），已禁止连接。请先在远端启动 dsh web 后重试。`)
       }
-    } catch (launchErr) {
-      this.loggerWarn(`remote-ssh: [${config.host}] remote service auto-start probe noticed: ${launchErr instanceof Error ? launchErr.message : String(launchErr)}`)
-      // A probe failure means auto-start was not confirmed; record clean state
       entry.autoStarted = false
       entry.harnessPath = undefined
-      // Don't abort yet if SSH tunnel might still connect to an existing service;
-      // only re-throw if it definitely cannot proceed.
+    } catch (probeErr) {
+      entry.autoStarted = false
+      entry.harnessPath = undefined
+      throw probeErr instanceof Error ? probeErr : new Error(String(probeErr))
     }
 
     const tunnel = new SshTunnel({

@@ -20,6 +20,11 @@ export interface EnsureServiceResult {
   readonly harnessPath?: string
 }
 
+export interface RemoteHomeDirectory {
+  readonly name: string
+  readonly path: string
+}
+
 function defaultSshRunner(host: string, remoteScript: string): Promise<string> {
   return new Promise((resolve, reject) => {
     execFile('ssh', ['-n', '-o', 'BatchMode=yes', '-o', 'ConnectTimeout=10', host, remoteScript], {
@@ -62,9 +67,39 @@ fi
     }
   }
 
-  /**
-   * Search for the `deepseek-harness` repository directory on the remote host.
-   */
+  /** List immediate directories under the remote user's home directory. */
+  async listHomeDirectories(host: string): Promise<RemoteHomeDirectory[]> {
+    const output = await this.runner(host, `printf 'HOME=%s\\n' "$HOME"; find "$HOME" -mindepth 1 -maxdepth 1 -type d -printf '%f\\n' 2>/dev/null | sort`)
+    const lines = output.split(/\r?\n/).map((line) => line.trim()).filter(Boolean)
+    const home = lines.find((line) => line.startsWith('HOME='))?.slice(5) ?? '~'
+    return lines.filter((name) => /^[A-Za-z0-9._-]+$/.test(name)).map((name) => ({
+      name,
+      path: `${home}/${name}`,
+    }))
+  }
+
+  /** Resolve the remote user's home directory absolute path. */
+  async homeDirectory(host: string): Promise<string> {
+    const output = await this.runner(host, `printf '%s' "$HOME"`)
+    const home = output.trim()
+    if (!home) {
+      throw new Error(`远端主机 "${host}" 无法解析 $HOME 目录。`)
+    }
+    return home
+  }
+
+  /** Create one immediate child directory under the remote user's home. */
+  async createHomeDirectory(host: string, name: string): Promise<RemoteHomeDirectory> {
+    const trimmed = name.trim()
+    if (!/^[A-Za-z0-9._-]+$/.test(trimmed) || trimmed === '.' || trimmed === '..') {
+      throw new Error('工作区名称只允许字母、数字、点、下划线和短横线。')
+    }
+    const output = await this.runner(host, `mkdir -p -- "$HOME/${trimmed}" && test -d "$HOME/${trimmed}" && printf READY`)
+    if (!output.includes('READY')) throw new Error(`远端主机无法在 ~/ 下创建工作区 "${trimmed}"，请检查目录权限。`)
+    return { name: trimmed, path: `$HOME/${trimmed}` }
+  }
+
+
   async findHarnessPath(host: string): Promise<string> {
     const findScript = `
 for p in \

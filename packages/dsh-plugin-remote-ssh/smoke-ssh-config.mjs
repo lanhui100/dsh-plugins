@@ -72,7 +72,7 @@ try {
   assert.ok(hostNames.includes('dev'), 'Must include dev')
   assert.ok(hostNames.includes('preprod'), 'Must include preprod')
   assert.ok(hostNames.includes('pro'), 'Must include pro')
-  assert.ok(hostNames.includes('github.com'), 'Must include github.com')
+  assert.equal(hostNames.includes('github.com'), false, 'Must EXCLUDE github.com from parsed remote hosts')
 
   assert.equal(hostNames.includes('password-only'), false, 'Must EXCLUDE password-only host without IdentityFile')
   assert.equal(hostNames.includes('*.internal'), false, 'Must EXCLUDE wildcard *.internal')
@@ -90,14 +90,14 @@ try {
   assert.equal(preprodEntry.user, 'dm')
   assert.equal(preprodEntry.identityFile, 'C:/Users/HUAWEI/.ssh/id_rsa')
 
-  // 3. Test getAvailableSshHosts (filtering already-added hosts)
-  const currentAdded = ['dev', 'github.com']
+  // 3. Test getAvailableSshHosts (filtering already-added hosts and excluded service hosts like github)
+  const currentAdded = ['dev']
   const available = getAvailableSshHosts({ sshConfigPath: tempFile, currentHosts: currentAdded })
   const availableNames = available.map((h) => h.host)
   console.log('Available unadded hosts:', availableNames)
 
   assert.equal(availableNames.includes('dev'), false, 'Must filter out already added host "dev"')
-  assert.equal(availableNames.includes('github.com'), false, 'Must filter out already added host "github.com"')
+  assert.equal(availableNames.includes('github.com'), false, 'Must filter out github.com from available unadded hosts')
   assert.ok(availableNames.includes('preprod'), 'Must include unadded host "preprod"')
   assert.ok(availableNames.includes('pro'), 'Must include unadded host "pro"')
 
