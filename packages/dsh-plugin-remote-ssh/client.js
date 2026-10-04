@@ -915,11 +915,24 @@ window.__ModuleLoader__.load({
                     streamed = true
 
                     if (ctx.sessions) {
-                      if (frame.type === 'assistant-stream' || (frame.type === 'event' && frame.event && frame.event.type === 'turn/start')) {
+                      const isTurnStart = frame.type === 'assistant-stream' ||
+                        (frame.type === 'event' && frame.event && (
+                          frame.event.type === 'turn/start' ||
+                          frame.event.type === 'tool/call' ||
+                          frame.event.type === 'tool/execution'
+                        ))
+                      const isTurnEnd = (frame.type === 'event' && frame.event && (
+                        frame.event.type === 'turn/end' ||
+                        frame.event.type === 'turn/complete' ||
+                        frame.event.type === 'turn/error' ||
+                        frame.event.type === 'turn/interrupt'
+                      )) || frame.type === 'turn-end' || frame.type === 'complete'
+
+                      if (isTurnStart) {
                         if (typeof ctx.sessions.handleSessionStatus === 'function') {
                           ctx.sessions.handleSessionStatus(id, true)
                         }
-                      } else if (frame.type === 'event' && frame.event && frame.event.type === 'turn/end') {
+                      } else if (isTurnEnd) {
                         if (typeof ctx.sessions.handleSessionStatus === 'function') {
                           ctx.sessions.handleSessionStatus(id, false)
                         }
@@ -4028,7 +4041,25 @@ window.__ModuleLoader__.load({
         }
       } catch (_) {}
 
+      // Window focus and visibility listener to re-verify status on focus/wake
+      const onFocusOrVisible = () => {
+        if (typeof document !== 'undefined' && document.visibilityState === 'hidden') return
+        void reconcileRemoteSource(ctx)
+      }
+      if (typeof window !== 'undefined' && typeof window.addEventListener === 'function') {
+        window.addEventListener('focus', onFocusOrVisible)
+      }
+      if (typeof document !== 'undefined' && typeof document.addEventListener === 'function') {
+        document.addEventListener('visibilitychange', onFocusOrVisible)
+      }
+
       ctx.effect(() => () => {
+        if (typeof window !== 'undefined' && typeof window.removeEventListener === 'function') {
+          window.removeEventListener('focus', onFocusOrVisible)
+        }
+        if (typeof document !== 'undefined' && typeof document.removeEventListener === 'function') {
+          document.removeEventListener('visibilitychange', onFocusOrVisible)
+        }
         clearInterval(timer)
         if (clientAbortController) {
           try { clientAbortController.abort() } catch {}
