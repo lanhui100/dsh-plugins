@@ -378,35 +378,37 @@ export function registerRemoteSshRoute(
 
           try {
             const hostSnapshots = await Promise.all(readyCallers.map(async ({ host, caller }) => {
-              const [items, baseline] = await Promise.all([
-                listRemoteSessions(caller),
-                caller.fetchWorkspaceBaseline().catch((err) => {
-                  console.warn(`remote-ssh: [${host}] baseline fetch failed:`, err)
-                  return undefined
-                }),
-              ])
+              try {
+                const [items, baseline, home] = await Promise.all([
+                  listRemoteSessions(caller).catch((err) => {
+                    console.warn(`remote-ssh: [${host}] listRemoteSessions failed:`, err)
+                    return []
+                  }),
+                  caller.fetchWorkspaceBaseline().catch((err) => {
+                    console.warn(`remote-ssh: [${host}] baseline fetch failed:`, err)
+                    return undefined
+                  }),
+                  manager.getHomeDirectory(host).catch((err: unknown) => {
+                    console.warn(`remote-ssh: [${host}] home directory resolve failed:`, err)
+                    return undefined
+                  }),
+                ])
 
-              if (baseline !== undefined) {
-                for (const it of baseline.items) {
-                  pathToRemoteWorkspaceId.set(`${host}:${it.path}`, it.workspaceId)
+                if (baseline !== undefined) {
+                  for (const it of baseline.items) {
+                    pathToRemoteWorkspaceId.set(`${host}:${it.path}`, it.workspaceId)
+                  }
                 }
-              }
 
-              const validMap = baseline !== undefined
-                ? new Map(baseline.items.map((it) => [it.path, { workspaceId: it.workspaceId, title: it.title }]))
-                : undefined
+                const validMap = baseline !== undefined
+                  ? new Map(baseline.items.map((it) => [it.path, { workspaceId: it.workspaceId, title: it.title }]))
+                  : undefined
 
-              void caller.ensureEventsListener().catch(() => {})
-              // Resolve the remote user's home directory so the client can mount a
-              // host-root folder that nests every workspace beneath it.
-              const home = await manager.getHomeDirectory(host).catch((err: unknown) => {
-                console.warn(`remote-ssh: [${host}] home directory resolve failed:`, err)
-                return undefined
-              })
-              const rawWorkspaces = groupSessionsByWorkspace(items, 50, validMap)
-              const workspaceGroups = rawWorkspaces.length > 0
-                ? rawWorkspaces
-                : [{ cwd: home !== undefined ? `${home}/unknown-workspace` : '~', name: '未知工作区', sessions: [], total: 0 }]
+                void caller.ensureEventsListener().catch(() => {})
+                const rawWorkspaces = groupSessionsByWorkspace(items, 50, validMap)
+                const workspaceGroups = rawWorkspaces.length > 0
+                  ? rawWorkspaces
+                  : [{ cwd: home !== undefined ? `${home}/unknown-workspace` : '~', name: '未知工作区', sessions: [], total: 0 }]
 
               for (const it of items) {
                 if (it.origin === 'subagent' && it.parentSessionId) {
@@ -490,7 +492,18 @@ export function registerRemoteSshRoute(
                 archivedSessionIds,
                 pinnedSessionIds,
               }
-            }))
+            } catch (hostErr) {
+              console.warn(`remote-ssh: [${host}] host snapshot aggregation failed:`, hostErr)
+              return {
+                host,
+                home: undefined,
+                workspaces: [],
+                sessions: [],
+                archivedSessionIds: [],
+                pinnedSessionIds: [],
+              }
+            }
+          }))
 
             const aggregatedWorkspaces = hostSnapshots.flatMap((s) => s.workspaces)
             const aggregatedSessions = hostSnapshots.flatMap((s) => s.sessions)
@@ -1084,15 +1097,39 @@ export function registerRemoteSshRoute(
           })
           abortController.signal.addEventListener('abort', () => unlisten(), { once: true })
 
+          let lastActivityTime = Date.now()
+          const heartbeatTimer = setInterval(() => {
+            if (abortController.signal.aborted) {
+              clearInterval(heartbeatTimer)
+              return
+            }
+            if (Date.now() - lastActivityTime >= 30_000) {
+              clearInterval(heartbeatTimer)
+              abortController.abort()
+              try { res.end() } catch {}
+              return
+            }
+            try {
+              if (typeof res.write === 'function') {
+                res.write(': heartbeat\n\n')
+              }
+            } catch {
+              clearInterval(heartbeatTimer)
+            }
+          }, 15_000)
+          abortController.signal.addEventListener('abort', () => clearInterval(heartbeatTimer), { once: true })
+
           const stream = caller.followSession({ address, assistantStream: true }, abortController.signal)
 
           for await (const frame of stream) {
             if (abortController.signal.aborted) break
+            lastActivityTime = Date.now()
             const payload = `data: ${JSON.stringify(frame)}\n\n`
             if (typeof res.write === 'function') {
               res.write(payload)
             }
           }
+          clearInterval(heartbeatTimer)
         } catch (err) {
           if (!abortController.signal.aborted) {
             const errorPayload = `data: ${JSON.stringify({ type: 'error', error: String(err) })}\n\n`

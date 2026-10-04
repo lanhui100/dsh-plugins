@@ -44,6 +44,8 @@ export interface ActiveHostEntry {
   autoStarted?: boolean
   /** Remote harness folder used for the auto-launch, when known. */
   harnessPath?: string
+  /** Cached remote user home directory absolute path. */
+  homeDirectory?: string
 }
 
 /** Resolve standard storage file path for dynamic host additions ($DSH_HOME/remote-ssh-hosts.json). */
@@ -190,11 +192,18 @@ export class RemoteHostManager {
     throw new Error(`Host "${host}" caller is not available.`)
   }
 
-  /** Resolve a remote host's user home directory absolute path. */
+  /** Resolve a remote host's user home directory absolute path (cached in memory). */
   async getHomeDirectory(host: string): Promise<string> {
     const entry = this.entries.get(host)
     if (!entry) throw new Error(`Host "${host}" is not registered in RemoteHostManager.`)
-    return this.launcher.homeDirectory(host)
+    if (entry.homeDirectory) {
+      return entry.homeDirectory
+    }
+    const resolved = await this.launcher.homeDirectory(host)
+    if (resolved) {
+      entry.homeDirectory = resolved
+    }
+    return resolved
   }
 
 
