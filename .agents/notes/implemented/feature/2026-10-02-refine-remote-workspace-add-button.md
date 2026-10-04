@@ -31,7 +31,7 @@ Status: implemented
   - Tooltip 浮层显式使用高于远程 Popover 的 stacking layer（`z-index: 11000`；Popover 为 `10000`），避免图标 tooltip 被浮层内容遮挡。
   - 面板间距收紧（主机行 `gap: 4px` → 后续再收紧至 `2px`、内边距 `6px → 4px`），hover 改为背景色变化（`--dsw-alias-interactive-bg-hover`），不再使用边框。
   - **容错响应解析与错误信息透传**：连接/断联/列表等所有 fetch 响应改走 `parseJsonResponse`（先 `text()` 后 `json()` 双通道、全程不抛），若响应为空（如未重启桌面端导致新路由未命中落入 405 静态 fallback）显示明确引导“服务端无响应，请重启桌面端后重试”；连接失败透传服务端的具体错误详情（而不是仅抛出 `add-failed` 状态码），且 `startHost` 不再因自动探查 harness 路径未果而过早放弃，允许后续 SSH 隧道尝试连接已存在的后台服务。
-   - **（后续变更，本子决策被部分取代）** 连接失败的提示方式已改：浮层内红字原因移除，仅保留极简 toast「连接失败」，见 [2026-10-04-popover-connect-failure-concise-toast-only](../feature/2026-10-04-popover-connect-failure-concise-toast-only.md)。本条「失败仍走浮层内错误反馈并可重试」「连接失败透传服务端的具体错误详情」在浮层展示侧不再适用；服务端错误 message 仍照常返回（Host 日志可查），仅客户端不再投递到浮层 UI。
+   - **（后续变更，本子决策被部分取代）** 连接失败的提示方式已改：浮层内红字原因移除，仅保留 toast（dsh 未启动类失败显示「连接失败：远程机器未启动 dsh 服务」，其余为「连接失败」；主机行下方全程无状态文字），见 [2026-10-04-popover-connect-failure-concise-toast-only](../feature/2026-10-04-popover-connect-failure-concise-toast-only.md)。本条「失败仍走浮层内错误反馈并可重试」「连接失败透传服务端的具体错误详情」在浮层展示侧不再适用；服务端错误 message 仍照常返回（Host 日志可查），仅客户端不再投递到浮层 UI。
 
 ## Alternatives considered
 

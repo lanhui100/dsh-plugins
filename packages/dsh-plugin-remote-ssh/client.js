@@ -3342,6 +3342,14 @@ window.__ModuleLoader__.load({
       }, TOAST_HOLD_MS + TOAST_FADE_MS)
     }
 
+    /**
+     * Concise connect-failure toast copy: name the remote dsh-not-started
+     * cause when the server message says so, otherwise a bare "连接失败".
+     */
+    function connectFailToast(errMsg) {
+      return /未启动|无可用服务/.test(errMsg) ? '连接失败：远程机器未启动 dsh 服务' : '连接失败'
+    }
+
     async function toggleAddRemotePopover(btn, ctx) {
       if (typeof document === 'undefined') return
       const existing = (typeof document.getElementById === 'function' ? document.getElementById('dsh-add-remote-popover') : null) || document.querySelector?.('#dsh-add-remote-popover')
@@ -3388,7 +3396,7 @@ window.__ModuleLoader__.load({
 
       const hint = document.createElement('div')
       hint.className = 'dsh-popover-hint'
-      hint.textContent = '已连接的主机可断开；未连接的主机一键接入，若远端未启动将自动拉起 dsh web 服务。'
+      hint.textContent = '远程连接主机，但注意该主机需已启动 dsh 服务。'
 
       const body = document.createElement('div')
       body.className = 'dsh-popover-body'
@@ -3556,8 +3564,9 @@ window.__ModuleLoader__.load({
             const doAdd = async (ev) => {
               if (ev && typeof ev.stopPropagation === 'function') ev.stopPropagation()
               setAddBusy(addBtn, true)
+              // No status text under the host row at any point (pending or failure).
               feedbackEl.className = 'dsh-popover-feedback'
-              feedbackEl.textContent = '正在检测远端 dsh 服务并建立隧道...'
+              feedbackEl.textContent = ''
               try {
                 const postRes = await fetch(ADD_HOST_ROUTE, {
                   method: 'POST',
@@ -3585,18 +3594,12 @@ window.__ModuleLoader__.load({
                   }, 700)
                 } else {
                   setAddBusy(addBtn, false)
-                  // Failure is surface-level only: no red reason under the row,
-                  // just a very concise toast (dsh-not-started et al.).
-                  feedbackEl.className = 'dsh-popover-feedback'
-                  feedbackEl.textContent = ''
-                  showRemoteToast('连接失败', 'error')
+                  const errMsg = (postData && (postData.error || postData.message)) ? `${postData.message || postData.error}` : ''
+                  showRemoteToast(connectFailToast(errMsg), 'error')
                 }
               } catch (err) {
                 setAddBusy(addBtn, false)
-                // Same surface-level-only failure: concise toast, no in-panel red text.
-                feedbackEl.className = 'dsh-popover-feedback'
-                feedbackEl.textContent = ''
-                showRemoteToast('连接失败', 'error')
+                showRemoteToast(connectFailToast(String(err.message || err)), 'error')
               }
             }
 
