@@ -323,6 +323,21 @@ export class RemoteCaller {
   }
 
   /**
+   * Create or adopt one remote workspace directory under the remote user's home.
+   * Invokes the official workspace controller's `workspace/create` over the remote carrier.
+   */
+  async createWorkspace(path: string): Promise<{ workspaceId: string; path: string; title: string }> {
+    const res = await this.invoke<{ workspace?: { workspaceId: string; path: string; title: string } }>(
+      'workspace/create',
+      { request: { path } },
+    )
+    if (res && res.workspace) {
+      return res.workspace
+    }
+    throw new Error('remote-ssh: workspace/create returned without workspace entity')
+  }
+
+  /**
    * Relay the remote `session/follow` multiplexed WebSocket stream into an async iterable of wire frames.
    * Emits snapshot, delta events, and assistant stream frames in real time.
    */

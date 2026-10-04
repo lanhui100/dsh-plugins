@@ -1634,7 +1634,7 @@ window.__ModuleLoader__.load({
             order: 3 !important;
           }
           div[data-row-key$=":hostroot"] span[class*="title"] {
-            font-weight: 600 !important;
+            font-weight: 500 !important;
             color: var(--dsw-alias-label-primary, inherit) !important;
           }
           /* Hide the official actions menu on hostroot row (no rename/delete workspace on host) */
@@ -2182,15 +2182,23 @@ window.__ModuleLoader__.load({
           .dsh-remote-host-select {
             box-sizing: border-box;
             flex: 1;
+            width: 100%;
             height: 36px;
-            padding: 0 10px;
+            padding: 0 28px 0 10px;
             border-radius: var(--dsw-radius-sm, 4px);
             border: 0.5px solid var(--dsw-alias-border-l3, rgba(0, 0, 0, 0.18));
-            background: var(--dsw-alias-bg-layer-1, #ffffff);
+            background-color: var(--dsw-alias-bg-layer-1, #ffffff);
+            background-image: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='12' height='12' viewBox='0 0 12 12' fill='none'%3E%3Cpath d='M3 4.5L6 7.5L9 4.5' stroke='%2381858C' stroke-width='1.5' stroke-linecap='round' stroke-linejoin='round'/%3E%3C/svg%3E");
+            background-position: right 8px center;
+            background-repeat: no-repeat;
+            background-size: 12px 12px;
             color: var(--dsw-alias-label-primary, inherit);
             font-family: inherit;
             font-size: 13px;
-            line-height: 22px;
+            line-height: 36px;
+            appearance: none;
+            -webkit-appearance: none;
+            -moz-appearance: none;
             outline: none;
             cursor: pointer;
             transition: border-color 150ms ease, box-shadow 150ms ease;
@@ -2202,6 +2210,7 @@ window.__ModuleLoader__.load({
           .dsh-remote-host-input {
             box-sizing: border-box;
             flex: 1;
+            width: 100%;
             height: 36px;
             padding: 0 10px;
             border-radius: var(--dsw-radius-sm, 4px);
@@ -2210,7 +2219,7 @@ window.__ModuleLoader__.load({
             color: var(--dsw-alias-label-primary, inherit);
             font-family: inherit;
             font-size: 13px;
-            line-height: 22px;
+            line-height: 36px;
             outline: none;
             transition: border-color 150ms ease, box-shadow 150ms ease;
           }
@@ -2236,7 +2245,7 @@ window.__ModuleLoader__.load({
             font-family: inherit;
             font-size: 13px;
             font-weight: 500;
-            line-height: 22px;
+            line-height: 36px;
             cursor: pointer;
             white-space: nowrap;
             transition: background-color 150ms ease, border-color 150ms ease, color 150ms ease;
@@ -2652,6 +2661,7 @@ window.__ModuleLoader__.load({
             for (const d of dirs) {
               const opt = document.createElement('option')
               opt.value = d.name
+              if (d.path) opt.dataset.path = d.path
               // Clean name: strip any leading ~/ or ~ path prefix to show plain directory name
               const displayName = d.name.replace(/^~[/\\]+/, '')
               opt.textContent = displayName
@@ -2701,7 +2711,8 @@ window.__ModuleLoader__.load({
         wsFeedback.className = 'dsh-popover-feedback'
         wsFeedback.textContent = '正在添加工作区...'
         try {
-          let targetPath = `~/${targetName}`
+          const selectedPath = dirSelect.selectedOptions && dirSelect.selectedOptions[0] ? dirSelect.selectedOptions[0].dataset.path : ''
+          const targetPath = selectedPath || `~/${targetName}`
           if (customName) {
             const addRes = await fetch(ADD_WORKSPACE_ROUTE, {
               method: 'POST',
@@ -2717,15 +2728,23 @@ window.__ModuleLoader__.load({
               createBtn.disabled = false
               return
             }
-            targetPath = addData.path || targetPath
+          } else {
+            // Existing directory: register workspace and create initial session
+            const regRes = await fetch('/remote-ssh/register-workspace', {
+              method: 'POST',
+              headers: { 'Content-Type': 'application/json' },
+              body: JSON.stringify({ host, path: targetPath }),
+            })
+            const regData = await parseJsonResponse(regRes)
+            if (!regRes.ok || !regData || !regData.ok) {
+              const err = regData?.message || regData?.error || '注册工作区失败'
+              wsFeedback.className = 'dsh-popover-feedback dsh-feedback-error'
+              wsFeedback.textContent = err
+              showRemoteToast(err, 'error')
+              createBtn.disabled = false
+              return
+            }
           }
-
-          // Create initial session or register view in workspace list
-          await fetch(SESSION_CREATE_ROUTE, {
-            method: 'POST',
-            headers: { 'Content-Type': 'application/json' },
-            body: JSON.stringify({ cwd: targetPath, host }),
-          }).catch(() => {})
 
           showRemoteToast(`工作区 ${targetName} 添加成功`)
           if (ctx) void reconcileRemoteSource(ctx)
@@ -3528,17 +3547,18 @@ window.__ModuleLoader__.load({
                   }, 700)
                 } else {
                   setAddBusy(addBtn, false)
-                  const errMsg = (postData && (postData.error || postData.message)) ? `${postData.message || postData.error}` : '连接主机失败'
-                  feedbackEl.className = 'dsh-popover-feedback dsh-feedback-error'
-                  feedbackEl.textContent = errMsg
-                  showRemoteToast(errMsg, 'error')
+                  // Failure is surface-level only: no red reason under the row,
+                  // just a very concise toast (dsh-not-started et al.).
+                  feedbackEl.className = 'dsh-popover-feedback'
+                  feedbackEl.textContent = ''
+                  showRemoteToast('连接失败', 'error')
                 }
               } catch (err) {
                 setAddBusy(addBtn, false)
-                const errMsg = String(err.message || err)
-                feedbackEl.className = 'dsh-popover-feedback dsh-feedback-error'
-                feedbackEl.textContent = errMsg
-                showRemoteToast(errMsg, 'error')
+                // Same surface-level-only failure: concise toast, no in-panel red text.
+                feedbackEl.className = 'dsh-popover-feedback'
+                feedbackEl.textContent = ''
+                showRemoteToast('连接失败', 'error')
               }
             }
 

@@ -197,6 +197,39 @@ export function registerRemoteSshRoute(
 
     scoped.effect(() => scoped.webServer.register({
       kind: 'exact',
+      path: '/remote-ssh/register-workspace',
+      handler: async (req, res) => {
+        if (!isManager) {
+          sendJson(res, 400, { error: 'not-supported', message: 'Multi-host manager is not active in this runtime.' })
+          return
+        }
+        try {
+          const body = await readJsonBody(req)
+          const host = typeof body.host === 'string' ? body.host.trim() : ''
+          const targetPath = typeof body.path === 'string' ? body.path.trim() : ''
+          if (!host || !targetPath) {
+            sendJson(res, 400, { error: 'missing-fields', message: 'Fields "host" and "path" are required.' })
+            return
+          }
+          const manager = managerOrGetCaller as RemoteHostManager
+          const caller = manager.getCallerForHost(host)
+          if (!caller) {
+            sendJson(res, 503, { error: 'tunnel-not-ready', message: `Host "${host}" is not ready.` })
+            return
+          }
+          // Register workspace in remote DSH
+          const wsRes = await caller.createWorkspace(targetPath).catch(() => undefined)
+          // Also create an initial session in this workspace
+          await caller.invoke('session/create', { request: { cwd: targetPath } }).catch(() => undefined)
+          sendJson(res, 200, { ok: true, host, path: targetPath, workspace: wsRes })
+        } catch (error) {
+          sendJson(res, 400, { error: 'register-failed', message: error instanceof Error ? error.message : String(error) })
+        }
+      },
+    }), 'remote-ssh: register workspace route')
+
+    scoped.effect(() => scoped.webServer.register({
+      kind: 'exact',
       path: ADD_WORKSPACE_ROUTE,
       handler: async (req, res) => {
         if (!isManager) {
@@ -217,6 +250,11 @@ export function registerRemoteSshRoute(
             return
           }
           const result = await manager.createHomeDirectory(host, name)
+          // Also create an initial session in this new workspace so it immediately surfaces
+          const caller = manager.getCallerForHost(host)
+          if (caller) {
+            await caller.invoke('session/create', { request: { cwd: result.path } }).catch(() => undefined)
+          }
           sendJson(res, 200, { ok: true, host, name: result.name, path: result.path })
         } catch (error) {
           sendJson(res, 400, { error: 'create-failed', message: error instanceof Error ? error.message : String(error) })

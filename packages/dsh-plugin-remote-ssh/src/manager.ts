@@ -163,11 +163,26 @@ export class RemoteHostManager {
     return this.launcher.listHomeDirectories(host)
   }
 
-  /** Create one remote user's home directory for a workspace. */
+  /** Create one remote user's home directory for a workspace and register it into remote DSH. */
   async createHomeDirectory(host: string, name: string) {
     const entry = this.entries.get(host)
     if (!entry) throw new Error(`Host "${host}" is not registered in RemoteHostManager.`)
-    return this.launcher.createHomeDirectory(host, name)
+    const dir = await this.launcher.createHomeDirectory(host, name)
+    // Register the created directory into remote DSH via workspace/create
+    if (entry.caller) {
+      await entry.caller.createWorkspace(dir.path).catch(() => undefined)
+    }
+    return dir
+  }
+
+  /** Register an existing remote directory as a workspace in remote DSH. */
+  async registerWorkspace(host: string, path: string) {
+    const entry = this.entries.get(host)
+    if (!entry) throw new Error(`Host "${host}" is not registered in RemoteHostManager.`)
+    if (entry.caller) {
+      return entry.caller.createWorkspace(path)
+    }
+    throw new Error(`Host "${host}" caller is not available.`)
   }
 
   /** Resolve a remote host's user home directory absolute path. */
