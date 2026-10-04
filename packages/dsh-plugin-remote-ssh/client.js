@@ -1635,9 +1635,73 @@ window.__ModuleLoader__.load({
             font-weight: 600 !important;
             color: var(--dsw-alias-label-primary, inherit) !important;
           }
-          /* Hide the actions menu on hostroot row (no rename/delete workspace on host) */
+          /* Hide the official actions menu on hostroot row (no rename/delete workspace on host) */
           div[data-row-key$=":hostroot"] span[class*="rowActions"] {
             display: none !important;
+          }
+
+          /* Host row action container on the far right */
+          div[data-row-key$=":hostroot"] .dsh-host-row-actions {
+            order: 4 !important;
+            margin-left: auto !important;
+            display: inline-flex !important;
+            align-items: center !important;
+            gap: 4px !important;
+            flex: none !important;
+            padding-right: 2px !important;
+            opacity: 0.8;
+            transition: opacity 120ms ease;
+          }
+          div[data-row-key$=":hostroot"]:hover .dsh-host-row-actions,
+          div[data-row-key$=":hostroot"]:focus-within .dsh-host-row-actions,
+          div[data-row-key$=":hostroot"] .dsh-host-row-actions.dsh-popover-open {
+            opacity: 1 !important;
+          }
+
+          /* Pure icon buttons for host row (local and remote) */
+          .dsh-host-action-btn {
+            position: relative !important;
+            box-sizing: border-box !important;
+            border-radius: var(--dsw-radius-sm, 6px) !important;
+            cursor: pointer !important;
+            width: 24px !important;
+            height: 24px !important;
+            color: var(--dsw-alias-label-secondary, #64748b) !important;
+            background: transparent !important;
+            border: none !important;
+            flex: none !important;
+            justify-content: center !important;
+            align-items: center !important;
+            padding: 0 !important;
+            display: inline-flex !important;
+            transition: background 120ms ease, color 120ms ease;
+          }
+          .dsh-host-action-btn:hover {
+            background: var(--dsw-alias-interactive-bg-hover, rgba(0, 0, 0, 0.05)) !important;
+            color: var(--dsw-alias-label-primary, inherit) !important;
+          }
+          .dsh-host-action-btn:focus-visible {
+            outline: var(--dsw-focus-ring-width, 2px) solid var(--dsw-focus-ring-color, var(--dsw-alias-state-business-primary, #2563eb)) !important;
+            outline-offset: -1px !important;
+          }
+
+          /* Miniature blue globe badge on the bottom-left of remote host add workspace button */
+          .dsh-host-action-btn--remote {
+            position: relative !important;
+          }
+          .dsh-host-action-btn--remote::after {
+            content: '';
+            position: absolute;
+            bottom: 1px;
+            left: 1px;
+            width: 9px;
+            height: 9px;
+            background-image: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 12 12' fill='none'%3E%3Ccircle cx='6' cy='6' r='5' fill='%232563eb' stroke='%23ffffff' stroke-width='1'/%3E%3Cellipse cx='6' cy='6' rx='2.3' ry='5' stroke='%23ffffff' stroke-width='0.8'/%3E%3Cline x1='1' y1='6' x2='11' y2='6' stroke='%23ffffff' stroke-width='0.8'/%3E%3C/svg%3E");
+            background-size: contain;
+            background-repeat: no-repeat;
+            background-position: center;
+            pointer-events: none;
+            z-index: 2;
           }
 
           /* Workspaces and sessions: enforce 8px left alignment with NO left indent */
@@ -2443,19 +2507,283 @@ window.__ModuleLoader__.load({
     }
 
     /**
-     * Decorate first-level host-root rows: surface the full host alias in the title tooltip.
+     * Open a dedicated "添加远程工作区" popover anchored to the remote host header's add button.
+     * @param btn - the anchor button on the remote host row.
+     * @param host - the specific remote host alias (e.g. "dev").
+     * @param ctx - plugin client context.
+     */
+    async function openRemoteHostAddWorkspacePopover(btn, host, ctx) {
+      if (typeof document === 'undefined' || !btn) return
+      const existing = document.getElementById('dsh-host-add-workspace-popover')
+      if (existing) {
+        const isCurrent = existing.dataset.host === host
+        existing.remove()
+        if (isCurrent) return
+      }
+
+      const popover = document.createElement('div')
+      popover.id = 'dsh-host-add-workspace-popover'
+      popover.className = 'dsh-add-remote-popover'
+      popover.dataset.host = host
+
+      if (typeof btn.getBoundingClientRect === 'function') {
+        const rect = btn.getBoundingClientRect()
+        popover.style.top = `${(rect.bottom || 0) + 6}px`
+        const viewportWidth = typeof window !== 'undefined' && window.innerWidth ? window.innerWidth : 640
+        popover.style.left = `${Math.max(10, Math.min((rect.right || 300) - 300, viewportWidth - 320))}px`
+      }
+
+      const actionsParent = btn.closest?.('.dsh-host-row-actions')
+      if (actionsParent) actionsParent.classList.add('dsh-popover-open')
+
+      let removeOutsideClickListener = () => {}
+
+      const cleanup = () => {
+        removeOutsideClickListener()
+        if (actionsParent) actionsParent.classList.remove('dsh-popover-open')
+        popover.remove()
+      }
+
+      const header = document.createElement('div')
+      header.className = 'dsh-popover-header'
+      const titleRow = document.createElement('div')
+      titleRow.className = 'dsh-popover-title-row'
+      const titleSpan = document.createElement('span')
+      titleSpan.className = 'dsh-popover-title'
+      titleSpan.textContent = `添加远程工作区 [${host}]`
+      titleRow.appendChild(titleSpan)
+      const closeBtn = document.createElement('button')
+      closeBtn.className = 'dsh-popover-close-btn'
+      closeBtn.type = 'button'
+      closeBtn.textContent = '×'
+      closeBtn.setAttribute('aria-label', '关闭')
+      closeBtn.addEventListener('click', (ev) => {
+        if (ev && typeof ev.stopPropagation === 'function') ev.stopPropagation()
+        cleanup()
+      })
+      header.appendChild(titleRow)
+      header.appendChild(closeBtn)
+
+      const body = document.createElement('div')
+      body.className = 'dsh-popover-body'
+
+      const wsForm = document.createElement('div')
+      wsForm.style.display = 'flex'
+      wsForm.style.flexDirection = 'column'
+      wsForm.style.gap = '8px'
+      wsForm.style.marginTop = '4px'
+      wsForm.style.padding = '8px'
+      wsForm.style.background = 'var(--dsw-alias-bg-module-platform, rgba(0, 0, 0, 0.03))'
+      wsForm.style.borderRadius = 'var(--dsw-radius-md, 8px)'
+
+      const dirSelect = document.createElement('select')
+      dirSelect.className = 'dsh-remote-host-select'
+      dirSelect.style.height = '30px'
+      dirSelect.style.fontSize = '12px'
+      dirSelect.style.width = '100%'
+
+      const updateDirOptions = async () => {
+        dirSelect.innerHTML = '<option value="">正在读取 ~/ 目录...</option>'
+        try {
+          const res = await fetch(REMOTE_WORKSPACES_ROUTE)
+          const wsData = await parseJsonResponse(res)
+          dirSelect.innerHTML = ''
+          const dirs = Array.isArray(wsData?.workspaces)
+            ? wsData.workspaces.filter((w) => w.host.toLowerCase() === host.toLowerCase())
+            : []
+          if (dirs.length === 0) {
+            dirSelect.innerHTML = '<option value="">~/ 下无目录</option>'
+          } else {
+            for (const d of dirs) {
+              const opt = document.createElement('option')
+              opt.value = d.name
+              opt.textContent = `~/${d.name}`
+              dirSelect.appendChild(opt)
+            }
+          }
+        } catch {
+          dirSelect.innerHTML = '<option value="">读取失败</option>'
+        }
+      }
+      void updateDirOptions()
+
+      wsForm.appendChild(dirSelect)
+
+      const inputRow = document.createElement('div')
+      inputRow.style.display = 'flex'
+      inputRow.style.gap = '6px'
+
+      const nameInput = document.createElement('input')
+      nameInput.type = 'text'
+      nameInput.placeholder = '或输入新建目录名 (~/xxx)'
+      nameInput.className = 'dsh-remote-host-select'
+      nameInput.style.height = '30px'
+      nameInput.style.fontSize = '12px'
+      nameInput.style.flex = '1'
+      nameInput.style.padding = '0 8px'
+
+      const createBtn = document.createElement('button')
+      createBtn.className = 'dsw-button dsw-button--primary'
+      createBtn.style.height = '30px'
+      createBtn.style.padding = '0 10px'
+      createBtn.style.fontSize = '12px'
+      createBtn.textContent = '添加/新建'
+
+      inputRow.appendChild(nameInput)
+      inputRow.appendChild(createBtn)
+      wsForm.appendChild(inputRow)
+
+      const wsFeedback = document.createElement('div')
+      wsFeedback.className = 'dsh-popover-feedback'
+      wsForm.appendChild(wsFeedback)
+
+      createBtn.addEventListener('click', async () => {
+        const customName = nameInput.value.trim()
+        const selectedDir = dirSelect.value
+        const targetName = customName || selectedDir
+        if (!targetName) {
+          wsFeedback.className = 'dsh-popover-feedback dsh-feedback-error'
+          wsFeedback.textContent = '请选择或输入目录名'
+          return
+        }
+
+        createBtn.disabled = true
+        wsFeedback.className = 'dsh-popover-feedback'
+        wsFeedback.textContent = '正在添加工作区...'
+        try {
+          let targetPath = `~/${targetName}`
+          if (customName) {
+            const addRes = await fetch(ADD_WORKSPACE_ROUTE, {
+              method: 'POST',
+              headers: { 'Content-Type': 'application/json' },
+              body: JSON.stringify({ host, name: customName }),
+            })
+            const addData = await parseJsonResponse(addRes)
+            if (!addRes.ok || !addData || !addData.ok) {
+              const err = addData?.message || addData?.error || '创建目录失败'
+              wsFeedback.className = 'dsh-popover-feedback dsh-feedback-error'
+              wsFeedback.textContent = err
+              showRemoteToast(err, 'error')
+              createBtn.disabled = false
+              return
+            }
+            targetPath = addData.path || targetPath
+          }
+
+          // Create initial session or register view in workspace list
+          await fetch(SESSION_CREATE_ROUTE, {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({ cwd: targetPath, host }),
+          }).catch(() => {})
+
+          showRemoteToast(`工作区 ${targetName} 添加成功`)
+          if (ctx) void reconcileRemoteSource(ctx)
+          setTimeout(() => {
+            cleanup()
+          }, 700)
+        } catch (err) {
+          const msg = String(err.message || err)
+          wsFeedback.className = 'dsh-popover-feedback dsh-feedback-error'
+          wsFeedback.textContent = msg
+          showRemoteToast(msg, 'error')
+          createBtn.disabled = false
+        }
+      })
+
+      body.appendChild(wsForm)
+      popover.appendChild(header)
+      popover.appendChild(body)
+      document.body.appendChild(popover)
+
+      const handleOutsideClick = (e) => {
+        const isContains = typeof popover.contains === 'function' ? popover.contains(e.target) : false
+        const isBtn = e.target === btn || (typeof btn.contains === 'function' && btn.contains(e.target))
+        if (!isContains && !isBtn) {
+          cleanup()
+        }
+      }
+      removeOutsideClickListener = () => {
+        if (typeof document.removeEventListener === 'function') {
+          document.removeEventListener('pointerdown', handleOutsideClick)
+        }
+      }
+      setTimeout(() => {
+        if (typeof document.addEventListener === 'function') {
+          document.addEventListener('pointerdown', handleOutsideClick)
+        }
+      }, 10)
+    }
+
+    /**
+     * Decorate first-level host-root rows: surface the full host alias in the title tooltip
+     * and inject action buttons (Add Workspace) on the right of the host menu row.
      * The server icon is rendered via CSS ::after mask — no DOM nodes inside React-managed
      * elements are touched, preventing React removeChild crashes on toggle.
      */
-    function decorateHostRoots() {
+    function decorateHostRoots(ctx) {
       if (typeof document === 'undefined') return
       const rows = document.querySelectorAll('div[data-row-key$=":hostroot"]')
       for (const row of rows) {
+        const key = row.getAttribute('data-row-key') || ''
         const titleEl = row.querySelector('span[class*="title"]')
-        if (titleEl && !titleEl.title) {
-          const key = row.getAttribute('data-row-key') || ''
-          const match = key.match(/^workspace:remote:([^:]+):hostroot$/)
-          if (match) titleEl.setAttribute('title', `远程主机: ${match[1]}`)
+        const match = key.match(/^workspace:remote:([^:]+):hostroot$/)
+        if (match && titleEl && !titleEl.title) {
+          titleEl.setAttribute('title', `远程主机: ${match[1]}`)
+        }
+
+        // Host row actions container
+        let actions = row.querySelector('.dsh-host-row-actions')
+        if (!actions) {
+          actions = document.createElement('span')
+          actions.className = 'dsh-host-row-actions'
+          row.appendChild(actions)
+        }
+
+        if (match) {
+          // Remote Host: add workspace button with globe badge
+          const remoteHost = match[1]
+          let addBtn = actions.querySelector('.dsh-host-action-btn--remote')
+          if (!addBtn) {
+            addBtn = document.createElement('button')
+            addBtn.type = 'button'
+            addBtn.className = 'dsh-host-action-btn dsh-host-action-btn--remote'
+            addBtn.setAttribute('aria-label', `添加远程工作区 (${remoteHost})`)
+            addBtn.innerHTML = ADD_WORKSPACE_ICON_SVG
+            addBtn._dshTooltipDisposer = attachTooltip(addBtn, `添加远程工作区 (${remoteHost})`, { side: 'bottom', delayMs: TOOLTIP_DELAY_MS })
+            addBtn.addEventListener('click', (ev) => {
+              if (ev && typeof ev.stopPropagation === 'function') ev.stopPropagation()
+              void openRemoteHostAddWorkspacePopover(addBtn, remoteHost, ctx)
+            })
+            actions.appendChild(addBtn)
+          }
+        } else if (key === 'workspace:local:hostroot') {
+          // Local Host: relocate official add workspace button or proxy
+          const officialHeaderActions = findWorkspaceHeaderActions()
+          const officialAddBtn = officialHeaderActions
+            ? officialHeaderActions.querySelector('button[aria-label="添加工作区"], button[aria-keyshortcuts*="workspace.add"]') ||
+              officialHeaderActions.children[officialHeaderActions.children.length - 1]
+            : null
+
+          if (officialAddBtn && officialAddBtn.parentElement !== actions) {
+            // Move official button into local host actions
+            actions.appendChild(officialAddBtn)
+          } else if (!officialAddBtn && !actions.querySelector('.dsh-host-action-btn--local')) {
+            // Fallback proxy button if official button not found yet
+            const proxyBtn = document.createElement('button')
+            proxyBtn.type = 'button'
+            proxyBtn.className = 'dsh-host-action-btn dsh-host-action-btn--local'
+            proxyBtn.setAttribute('aria-label', '添加工作区')
+            proxyBtn.innerHTML = ADD_WORKSPACE_ICON_SVG
+            proxyBtn._dshTooltipDisposer = attachTooltip(proxyBtn, '添加工作区', { side: 'bottom', delayMs: TOOLTIP_DELAY_MS })
+            proxyBtn.addEventListener('click', (ev) => {
+              if (ev && typeof ev.stopPropagation === 'function') ev.stopPropagation()
+              const officialHdr = findWorkspaceHeaderActions()
+              const origBtn = officialHdr ? officialHdr.querySelector('button[aria-label="添加工作区"]') : null
+              if (origBtn) origBtn.click()
+            })
+            actions.appendChild(proxyBtn)
+          }
         }
       }
     }
@@ -2757,7 +3085,15 @@ window.__ModuleLoader__.load({
       if (typeof document === 'undefined') return
       const popover = (typeof document.getElementById === 'function' ? document.getElementById('dsh-add-remote-popover') : null) || document.querySelector?.('#dsh-add-remote-popover')
       if (popover) popover.remove()
+      const hostWsPopover = (typeof document.getElementById === 'function' ? document.getElementById('dsh-host-add-workspace-popover') : null) || document.querySelector?.('#dsh-host-add-workspace-popover')
+      if (hostWsPopover) hostWsPopover.remove()
     }
+
+    /**
+     * Pure SVG icon for adding workspace (project folder with plus in top-right),
+     * matching the official DeepSeek Harness IconProjectAddOutlineRegular artwork.
+     */
+    const ADD_WORKSPACE_ICON_SVG = '<svg width="16" height="16" viewBox="0 0 16 16" fill="none" xmlns="http://www.w3.org/2000/svg" aria-hidden="true"><path d="M5.54492 2.06738C5.91034 2.06754 6.26318 2.20149 6.53711 2.44336L7.94043 3.68164V4.7998C7.71462 4.74105 7.50367 4.63139 7.32617 4.47461L5.87598 3.19238C5.78477 3.11185 5.66658 3.06754 5.54492 3.06738H2.94922C2.67322 3.06738 2.44946 3.29145 2.44922 3.56738V12.4326C2.44927 12.7087 2.67311 12.9326 2.94922 12.9326H12.9326C13.2086 12.9325 13.4326 12.7086 13.4326 12.4326V8.53613H14.4326V12.4326C14.4326 13.2609 13.7609 13.9325 12.9326 13.9326H2.94922C2.12083 13.9326 1.44927 13.261 1.44922 12.4326V3.56738C1.44946 2.73916 2.12094 2.06738 2.94922 2.06738H5.54492Z" fill="currentColor"/><path d="M9.75977 4.50208H14.5509" stroke="currentColor" stroke-width="1"/><path d="M12.1492 6.89758L12.1492 2.10642" stroke="currentColor" stroke-width="1"/></svg>'
 
     /** Connected state: the plug pins visibly enter the socket from the left. */
     const CONNECT_ICON_SVG = '<svg width="16" height="16" viewBox="0 0 16 16" fill="none" xmlns="http://www.w3.org/2000/svg" aria-hidden="true"><path d="M1 8h2" stroke="currentColor" stroke-width="1.3" stroke-linecap="round"/><rect x="3" y="4.5" width="3.5" height="7" rx="1.2" stroke="currentColor" stroke-width="1.3"/><path d="M6.5 6h2.5M6.5 10h2.5" stroke="currentColor" stroke-width="1.3" stroke-linecap="round"/><rect x="9" y="3.5" width="4" height="9" rx="1.5" stroke="currentColor" stroke-width="1.3"/><path d="M13 8h2" stroke="currentColor" stroke-width="1.3" stroke-linecap="round"/></svg>'
@@ -3122,158 +3458,6 @@ window.__ModuleLoader__.load({
         }
         body.appendChild(connectedSec.sectionEl)
 
-        // --- Add Remote Workspace Section ---
-        if (connectedHosts.length > 0) {
-          const wsSec = createSection('添加远程工作区', 'workspaces')
-          const wsForm = document.createElement('div')
-          wsForm.style.display = 'flex'
-          wsForm.style.flexDirection = 'column'
-          wsForm.style.gap = '8px'
-          wsForm.style.marginTop = '4px'
-          wsForm.style.padding = '8px'
-          wsForm.style.background = 'var(--dsw-alias-bg-module-platform, rgba(0, 0, 0, 0.03))'
-          wsForm.style.borderRadius = 'var(--dsw-radius-md, 8px)'
-
-          const selectRow = document.createElement('div')
-          selectRow.style.display = 'flex'
-          selectRow.style.gap = '6px'
-
-          const hostSelect = document.createElement('select')
-          hostSelect.className = 'dsh-remote-host-select'
-          hostSelect.style.height = '30px'
-          hostSelect.style.fontSize = '12px'
-          for (const h of connectedHosts) {
-            const opt = document.createElement('option')
-            opt.value = h.host
-            opt.textContent = h.host
-            hostSelect.appendChild(opt)
-          }
-
-          const dirSelect = document.createElement('select')
-          dirSelect.className = 'dsh-remote-host-select'
-          dirSelect.style.height = '30px'
-          dirSelect.style.fontSize = '12px'
-          dirSelect.style.flex = '1'
-
-          const updateDirOptions = async () => {
-            dirSelect.innerHTML = '<option value="">正在读取 ~/ 目录...</option>'
-            try {
-              const res = await fetch(REMOTE_WORKSPACES_ROUTE)
-              const wsData = await parseJsonResponse(res)
-              dirSelect.innerHTML = ''
-              const host = hostSelect.value
-              const dirs = Array.isArray(wsData?.workspaces)
-                ? wsData.workspaces.filter((w) => w.host.toLowerCase() === host.toLowerCase())
-                : []
-              if (dirs.length === 0) {
-                dirSelect.innerHTML = '<option value="">~/ 下无目录</option>'
-              } else {
-                for (const d of dirs) {
-                  const opt = document.createElement('option')
-                  opt.value = d.name
-                  opt.textContent = `~/${d.name}`
-                  dirSelect.appendChild(opt)
-                }
-              }
-            } catch {
-              dirSelect.innerHTML = '<option value="">读取失败</option>'
-            }
-          }
-          hostSelect.addEventListener('change', updateDirOptions)
-          void updateDirOptions()
-
-          selectRow.appendChild(hostSelect)
-          selectRow.appendChild(dirSelect)
-          wsForm.appendChild(selectRow)
-
-          const inputRow = document.createElement('div')
-          inputRow.style.display = 'flex'
-          inputRow.style.gap = '6px'
-
-          const nameInput = document.createElement('input')
-          nameInput.type = 'text'
-          nameInput.placeholder = '或输入新建目录名 (~/xxx)'
-          nameInput.className = 'dsh-remote-host-select'
-          nameInput.style.height = '30px'
-          nameInput.style.fontSize = '12px'
-          nameInput.style.flex = '1'
-          nameInput.style.padding = '0 8px'
-
-          const createBtn = document.createElement('button')
-          createBtn.className = 'dsw-button dsw-button--primary'
-          createBtn.style.height = '30px'
-          createBtn.style.padding = '0 10px'
-          createBtn.style.fontSize = '12px'
-          createBtn.textContent = '添加/新建'
-
-          inputRow.appendChild(nameInput)
-          inputRow.appendChild(createBtn)
-          wsForm.appendChild(inputRow)
-
-          const wsFeedback = document.createElement('div')
-          wsFeedback.className = 'dsh-popover-feedback'
-          wsForm.appendChild(wsFeedback)
-
-          createBtn.addEventListener('click', async () => {
-            const host = hostSelect.value
-            const customName = nameInput.value.trim()
-            const selectedDir = dirSelect.value
-            const targetName = customName || selectedDir
-            if (!targetName) {
-              wsFeedback.className = 'dsh-popover-feedback dsh-feedback-error'
-              wsFeedback.textContent = '请选择或输入目录名'
-              return
-            }
-
-            createBtn.disabled = true
-            wsFeedback.className = 'dsh-popover-feedback'
-            wsFeedback.textContent = '正在添加工作区...'
-            try {
-              let targetPath = `~/${targetName}`
-              if (customName) {
-                const addRes = await fetch(ADD_WORKSPACE_ROUTE, {
-                  method: 'POST',
-                  headers: { 'Content-Type': 'application/json' },
-                  body: JSON.stringify({ host, name: customName }),
-                })
-                const addData = await parseJsonResponse(addRes)
-                if (!addRes.ok || !addData || !addData.ok) {
-                  const err = addData?.message || addData?.error || '创建目录失败'
-                  wsFeedback.className = 'dsh-popover-feedback dsh-feedback-error'
-                  wsFeedback.textContent = err
-                  showRemoteToast(err, 'error')
-                  createBtn.disabled = false
-                  return
-                }
-                targetPath = addData.path || targetPath
-              }
-
-              // Create initial session or register view in workspace list
-              await fetch(SESSION_CREATE_ROUTE, {
-                method: 'POST',
-                headers: { 'Content-Type': 'application/json' },
-                body: JSON.stringify({ cwd: targetPath, host }),
-              }).catch(() => {})
-
-              showRemoteToast(`工作区 ${targetName} 添加成功`)
-              if (ctx) void reconcileRemoteSource(ctx)
-              setTimeout(() => {
-                removeOutsideClickListener()
-                popover.remove()
-              }, 700)
-            } catch (err) {
-              const msg = String(err.message || err)
-              wsFeedback.className = 'dsh-popover-feedback dsh-feedback-error'
-              wsFeedback.textContent = msg
-              showRemoteToast(msg, 'error')
-              createBtn.disabled = false
-            }
-          })
-
-          wsSec.listEl.appendChild(wsForm)
-          body.appendChild(wsSec.sectionEl)
-        }
-
         // --- Available hosts: connect action ------------------------------
         const availableSec = createSection('可添加主机', 'available')
         if (availableHosts.length === 0) {
@@ -3427,7 +3611,7 @@ window.__ModuleLoader__.load({
 
       const runDecorations = () => {
         scheduledHandle = null
-        decorateHostRoots()
+        decorateHostRoots(ctx)
         checkAndRenderActiveQuestion()
         checkAndRenderSettingsCard(ctx)
         checkAndRenderWorkspaceAddButton(ctx)
@@ -3455,6 +3639,10 @@ window.__ModuleLoader__.load({
         const decorated = document.querySelectorAll('div[data-row-key$=":hostroot"] span[class*="title"]')
         for (const el of decorated) {
           el.removeAttribute('title')
+        }
+        const actionHolders = document.querySelectorAll('div[data-row-key$=":hostroot"] .dsh-host-row-actions')
+        for (const el of actionHolders) {
+          el.remove()
         }
         removeQuestionCard()
         removeSettingsCard()

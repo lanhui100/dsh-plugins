@@ -204,10 +204,29 @@ class MiniElement {
         remaining = remaining.replace(attrMatch[0], '')
       }
 
+      const attrEndMatch = remaining.match(/\[([a-zA-Z0-9_-]+)\$=(["'])([^"']+)\2\]/)
+      if (attrEndMatch) {
+        const attrName = attrEndMatch[1]
+        const attrVal = attrEndMatch[3]
+        const actual = el.getAttribute(attrName)
+        if (!actual || !actual.endsWith(attrVal)) isMatch = false
+        remaining = remaining.replace(attrEndMatch[0], '')
+      }
+
+      const attrExactMatch = remaining.match(/\[([a-zA-Z0-9_-]+)=(["'])([^"']+)\2\]/)
+      if (attrExactMatch) {
+        const attrName = attrExactMatch[1]
+        const attrVal = attrExactMatch[3]
+        const actual = el.getAttribute(attrName)
+        if (actual !== attrVal) isMatch = false
+        remaining = remaining.replace(attrExactMatch[0], '')
+      }
+
       remaining = remaining.trim()
-      if (isMatch && remaining && !remaining.includes(' ')) {
-        if (el.tagName !== remaining.toUpperCase()) isMatch = false
-        else remaining = ''
+      const tagMatch = remaining.match(/^([a-zA-Z0-9]+)/)
+      if (tagMatch) {
+        if (el.tagName !== tagMatch[1].toUpperCase()) isMatch = false
+        remaining = remaining.slice(tagMatch[0].length).trim()
       }
 
       if (isMatch && remaining === '') {
@@ -610,6 +629,47 @@ assert.equal(doc.querySelector('.dsh-remote-tooltip'), null, 'No tooltip bubble 
 for (const listener of mutationListeners) {
   listener()
 }
+
+// 8. Test Host Root row action buttons:
+//    - Remote hostroot row has a pure icon button on the right with globe badge.
+//    - Local hostroot row has the official/proxy add workspace button on the right.
+const remoteHostRow = doc.createElement('div')
+remoteHostRow.setAttribute('data-row-key', 'workspace:remote:dev:hostroot')
+doc.body.appendChild(remoteHostRow)
+
+const localHostRow = doc.createElement('div')
+localHostRow.setAttribute('data-row-key', 'workspace:local:hostroot')
+doc.body.appendChild(localHostRow)
+
+for (const listener of mutationListeners) {
+  listener()
+}
+await new Promise((resolve) => setTimeout(resolve, 50))
+
+const remoteActions = remoteHostRow.querySelector('.dsh-host-row-actions')
+assert.ok(remoteActions, 'Remote hostroot must render a .dsh-host-row-actions container')
+const remoteAddBtn = remoteActions.querySelector('.dsh-host-action-btn--remote')
+assert.ok(remoteAddBtn, 'Remote hostroot must render .dsh-host-action-btn--remote button')
+assert.equal(remoteAddBtn.getAttribute('aria-label'), '添加远程工作区 (dev)', 'Remote add button must have specific label')
+assert.ok(remoteAddBtn.querySelector('svg'), 'Remote add button must render SVG')
+assert.match(source, /\.dsh-host-action-btn--remote::after/, 'CSS must include miniature globe badge for remote button')
+
+const localActions = localHostRow.querySelector('.dsh-host-row-actions')
+assert.ok(localActions, 'Local hostroot must render a .dsh-host-row-actions container')
+const localAddBtn = localActions.querySelector('.dsh-host-action-btn--local') || localActions.querySelector('button')
+assert.ok(localAddBtn, 'Local hostroot must render add workspace button on the right')
+
+// 8b. Click remote add button -> opens dedicated popover for dev host
+remoteAddBtn.click()
+await new Promise((resolve) => setTimeout(resolve, 50))
+const hostWsPopover = doc.querySelector('#dsh-host-add-workspace-popover')
+assert.ok(hostWsPopover, 'Clicking remote add button must render #dsh-host-add-workspace-popover')
+assert.ok(hostWsPopover.textContent.includes('添加远程工作区 [dev]'), 'Popover must show host title')
+
+// Closing host popover
+const popCloseBtn = hostWsPopover.querySelector('.dsh-popover-close-btn')
+if (popCloseBtn) popCloseBtn.click()
+assert.equal(doc.querySelector('#dsh-host-add-workspace-popover'), null, 'Popover must close when clicking close button')
 
 console.log('all smoke-workspace-btn assertions passed cleanly!')
 

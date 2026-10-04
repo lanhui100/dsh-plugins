@@ -31,7 +31,10 @@
 - **实时事件与打字机流**：Host 端提供 `GET /remote-ssh/session-follow` SSE 路由，连接远端 `/api/remote.mux` WebSocket 订阅 `session/follow`，将远端推送的事件增量与 assistant 打字机流实时中继到官方会话面板。
 - **问答交互（`ask_user_question`）**：Host 端监听远端 WebSocket 的 `$events` 逻辑流，捕获模型发起的 `user-questions/request` 与取消事件，通过 `GET /remote-ssh/pending-interaction`、SSE 流实时分发以及 `POST /remote-ssh/interaction-respond` 提供应答通道；Client 端在 composer 输入区域就地挂载问答交互卡片（支持推荐徽标、单选/多选/自定义输入、跳过与提交），并接入 `uiSession.registerPendingInteraction` 驱动侧边栏待回答指示点，提交后调用远端 `$events/result` 解除工具挂起，形成双向交互闭环。
 - **多远程主机池化与配置页面下拉添加**：内置 `RemoteHostManager` 与本地 OpenSSH 配置解析器（`ssh-config.ts`），自动读取本机 `~/.ssh/config` 中已配置 `IdentityFile` 密钥认证的有效主机条目，排除通配符与已添加主机；在客户端『设置』面板中自动挂载『远程主机聚合 (Remote SSH)』卡片，通过下拉框展示未添加的密钥主机，点击即可一键建立隧道连接、持久化至 `$DSH_HOME/remote-ssh-hosts.json` 并即时刷新工作区；收口 `/remote-ssh` 命令行，输入带参指令将直接提示前往设置页面操作。
-- **工作区快捷添加与远端服务自动拉起**：在侧边栏「自动化任务」下方的面板导航区常驻「添加远程主机」行按钮（与官方「插件」「自动化任务」面板行按钮同款样式：16px、1px 描边 Regular 图标，整行左对齐、文字完整显示，hover 官方背景），点击弹出浮层卡片，分为“已连接主机”与“可添加主机”两区（主机行间距紧凑、灰色圆角底、hover 背景加深）：已连接主机右侧为**断开图标按钮**（插头与插座左右分离、保留清晰间隙，不使用斜线或删除符号，active 蓝色，并使用项目统一 tooltip），点击即 `POST /remote-ssh/remove-host` 断开并移除（配置预置主机重启后会按配置恢复）；未连接主机右侧为**连接图标按钮**（插头插入插座式样，非 ＋ 的“重新添加”语义，并使用项目统一 tooltip）。执行连接时按钮进入 loading 态（spinner），内置 `RemoteLauncher` 自动执行远端端口与服务状态探测：若远端已运行 `dsh web` 则直接建立隧道连接；若未运行，则自动在远端常见路径（`~`、`~/work`、`/data` 等）检索 `deepseek-harness` 目录或全局 `dsh` 二进制，并在后台以 `nohup dsh web --port 3080` 拉起服务，轮询等待就绪后完成隧道连接；成功后按钮以 active 蓝色展示连接成功图标，并弹出官方样式全局 Toast（顶部居中、成功绿勾、自动淡出），文案含“主机 <host> 连接成功”并在自动拉起时追加“并已在远端自动启动 dsh 服务”，随后刷新工作区聚合。所有响应均经容错 JSON 解析（空/非 JSON 响应显示友好错误而非原始解析异常）。
+- **主机与工作区管理体验优化**：
+  - 侧边栏「自动化任务」下方的面板导航区保留「添加远程主机」全局按钮（与官方「插件」「自动化任务」面板行按钮同款样式：16px、1px 描边 Regular 图标，整行左对齐、文字完整显示），专职管理主机的连接与断开生命周期。
+  - **远程主机工作区添加**：从全局弹窗剥离，沉降到各远程主机菜单行（`remote:<host>:hostroot`）的最右端。按钮采用官方 `IconProjectAddOutlineRegular` 风格纯图标，并在左下角附加微型地球仪角标（与远程工作区文件夹角标一致），点击弹出针对该主机的专属添加/新建目录浮层。
+  - **本地工作区添加**：官方顶栏右侧的「添加工作区」原生按钮被精准移动至「本地」主机菜单行（`local:hostroot`）的最右端，使本地与远端工作区的增删管理具有统一、清晰的视觉与交互归属。
 - **主机接入不硬编码**：`config.host` 可选；省略时 `RemoteHostManager` 启动为空，全部主机经上述添加机制动态接入并持久化到 `$DSH_HOME/remote-ssh-hosts.json`，重启自动恢复。
 - 刷新：远程快照 60s 轮询（`POLL_INTERVAL_MS`），离开时移除注入行并恢复被代理的方法。
 
