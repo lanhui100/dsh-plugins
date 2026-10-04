@@ -534,241 +534,266 @@ window.__ModuleLoader__.load({
       } catch {}
     }
 
+    /** Global in-flight lock to avoid stacking overlapping reconciles */
+    let isReconciling = false
+    /** Global AbortController for client teardown cancellation */
+    let clientAbortController = typeof AbortController !== 'undefined' ? new AbortController() : null
+
+    /** Helper for fetch with timeout and teardown signal */
+    function timedFetch(url, options = {}, timeoutMs = 30_000) {
+      const signals = []
+      if (clientAbortController) signals.push(clientAbortController.signal)
+      if (options.signal) signals.push(options.signal)
+      if (typeof AbortSignal !== 'undefined' && typeof AbortSignal.timeout === 'function') {
+        signals.push(AbortSignal.timeout(timeoutMs))
+      }
+      const signal = typeof AbortSignal !== 'undefined' && typeof AbortSignal.any === 'function' && signals.length > 0
+        ? AbortSignal.any(signals)
+        : (signals[0] || undefined)
+      return fetch(url, { ...options, signal })
+    }
+
     /** Pull the remote snapshot and publish it into the official client models. */
     async function reconcileRemoteSource(ctx) {
-      ensureWorkspaceTreeMode(ctx)
+      if (isReconciling) return
+      isReconciling = true
       let response
       try {
-        response = await fetch(SESSIONS_ROUTE, { headers: { accept: 'application/json' } })
+        response = await timedFetch(SESSIONS_ROUTE, { headers: { accept: 'application/json' } }, 35_000)
       } catch {
+        isReconciling = false
         return
       }
-      if (!response.ok) {
-        if (response.status === 503) {
-          const body = await response.json().catch(() => null)
-          if (body && Array.isArray(body.hosts)) {
-            const validHosts = new Set(body.hosts.map((h) => String(h).trim().toLowerCase()))
-            for (const wid of [...injectedWorkspaceIds]) {
-              const h = hostOfRemoteId(wid)
-              if (h && !validHosts.has(h.toLowerCase())) {
-                removeRemoteHost(ctx, h)
+      try {
+        if (!response.ok) {
+          if (response.status === 503) {
+            const body = await response.json().catch(() => null)
+            if (body && Array.isArray(body.hosts)) {
+              const validHosts = new Set(body.hosts.map((h) => String(h).trim().toLowerCase()))
+              for (const wid of [...injectedWorkspaceIds]) {
+                const h = hostOfRemoteId(wid)
+                if (h && !validHosts.has(h.toLowerCase())) {
+                  removeRemoteHost(ctx, h)
+                }
+              }
+            }
+          }
+          return
+        }
+        const body = await response.json().catch(() => null)
+        if (!body || !Array.isArray(body.workspaces)) return
+
+        // Dirty-check: when the remote snapshot is unchanged, skip the whole
+        // model fan-out (upsertView / handleSessionAdded / archived+pinned
+        // sync). Previously every 60s poll unconditionally re-upserted every
+        // remote workspace and session, forcing the host model to re-render the
+        // whole sidebar tree even when nothing changed.
+        const fingerprint = snapshotFingerprint(body)
+        if (fingerprint === lastSnapshotFingerprint) return
+        lastSnapshotFingerprint = fingerprint
+
+        const sessions = ctx.sessions
+        const workspaces = ctx.workspaces && ctx.workspaces.list
+
+        const nextSessionIds = new Set()
+        const nextWorkspaceViews = new Map()
+        const nextSessions = []
+
+        // Store remote archived and pinned sessions
+        remoteArchivedSessionIds = new Set(
+          Array.isArray(body.archivedSessionIds) ? body.archivedSessionIds.map(String) : []
+        )
+        remotePinnedSessionIds = new Set(
+          Array.isArray(body.pinnedSessionIds) ? body.pinnedSessionIds.map(String) : []
+        )
+
+        const allSessions = Array.isArray(body.sessions) ? body.sessions : []
+        sessionParents.clear()
+        rawToNamespaced.clear()
+        for (const s of allSessions) {
+          if (s && s.sessionId) {
+            const sid = String(s.sessionId)
+            if (isNamespacedRemoteId(sid)) {
+              const raw = sid.split(':').slice(2).map(decodeURIComponent).join(':')
+              rawToNamespaced.set(raw, sid)
+            }
+          }
+          if (s && s.sessionId && s.parentSessionId) {
+            const child = String(s.sessionId)
+            const parent = String(s.parentSessionId)
+            sessionParents.set(child, parent)
+            if (isNamespacedRemoteId(child)) {
+              const rawChild = child.split(':').slice(2).map(decodeURIComponent).join(':')
+              sessionParents.set(rawChild, parent)
+              if (isNamespacedRemoteId(parent)) {
+                const rawParent = parent.split(':').slice(2).map(decodeURIComponent).join(':')
+                sessionParents.set(child, rawParent)
+                sessionParents.set(rawChild, rawParent)
               }
             }
           }
         }
-        return
-      }
-      const body = await response.json().catch(() => null)
-      if (!body || !Array.isArray(body.workspaces)) return
 
-      // Dirty-check: when the remote snapshot is unchanged, skip the whole
-      // model fan-out (upsertView / handleSessionAdded / archived+pinned
-      // sync). Previously every 60s poll unconditionally re-upserted every
-      // remote workspace and session, forcing the host model to re-render the
-      // whole sidebar tree even when nothing changed.
-      const fingerprint = snapshotFingerprint(body)
-      if (fingerprint === lastSnapshotFingerprint) return
-      lastSnapshotFingerprint = fingerprint
+        // Register one collapsed host-root folder per connected host (path = remote
+        // home), so the official workspace-tree grouping nests every workspace beneath
+        // its host: host (server icon + truncated name) -> workspace (folder + name) -> sessions.
+        const homes = Array.isArray(body.homes) && body.homes.length > 0
+          ? body.homes
+          : (Array.isArray(body.hosts) ? body.hosts.map((h) => ({ host: h, home: body.home || '~' })) : [])
 
-      const sessions = ctx.sessions
-      const workspaces = ctx.workspaces && ctx.workspaces.list
+        if (homes.length === 0 && body.host) {
+          homes.push({ host: body.host, home: body.home || '~' })
+        }
 
-      const nextSessionIds = new Set()
-      const nextWorkspaceViews = new Map()
-      const nextSessions = []
+        const activeHosts = new Set()
+        for (const item of homes) {
+          const host = typeof item.host === 'string' ? item.host.trim() : ''
+          if (!host) continue
+          activeHosts.add(host)
+          const home = typeof item.home === 'string' && item.home ? item.home : '~'
+          const hostRootId = `remote:${host}:hostroot`
+          nextWorkspaceViews.set(hostRootId, {
+            workspaceId: hostRootId,
+            path: home,
+            title: formatHostLabel(host),
+            sessionIds: [],
+            createdAt: undefined,
+            updatedAt: new Date().toISOString(),
+          })
+        }
 
-      // Store remote archived and pinned sessions
-      remoteArchivedSessionIds = new Set(
-        Array.isArray(body.archivedSessionIds) ? body.archivedSessionIds.map(String) : []
-      )
-      remotePinnedSessionIds = new Set(
-        Array.isArray(body.pinnedSessionIds) ? body.pinnedSessionIds.map(String) : []
-      )
+        for (const ws of body.workspaces) {
+          if (!ws || typeof ws.cwd !== 'string') continue
+          if (typeof ws.workspaceId === 'string' && ws.workspaceId.startsWith('remote:')) {
+            const parts = ws.workspaceId.split(':')
+            if (parts.length >= 3) {
+              const h = decodeURIComponent(parts[1])
+              if (h) activeHosts.add(h)
+            }
+          }
+          // Root workspace view only lists direct sessions (subagents excluded)
+          const sessionIds = (ws.sessions || []).map((s) => String(s.sessionId))
+          const workspaceId = ws.workspaceId || `remote:${ws.cwd}`
+          const cleanName = ws.name ? ws.name.replace(/^\[[^\]]+\]\s*/, '') : ''
+          nextWorkspaceViews.set(workspaceId, {
+            workspaceId,
+            path: ws.cwd,
+            title: cleanName || '未知工作区',
+            sessionIds,
+            createdAt: new Date().toISOString(),
+            updatedAt: new Date().toISOString(),
+          })
+        }
+        // Discover local workspaces from ctx.workspaces.list and register a "本地" host root
+        // so all local workspaces are neatly nested under [本地] fold menu just like remote hosts.
+        const allItems = (workspaces && Array.isArray(workspaces.items)) ? workspaces.items : []
+        const localWorkspaces = allItems.filter((it) => it && it.workspaceId && !isRemoteStateId(it.workspaceId) && !it.workspaceId.endsWith(':hostroot'))
+        if (localWorkspaces.length > 0) {
+          const firstLocalPath = localWorkspaces[0]?.path || ''
+          const driveMatch = firstLocalPath.match(/^([A-Za-z]:[/\\])/)
+          const localDriveRoot = driveMatch ? driveMatch[1].replace(/\\/g, '/') : (firstLocalPath.startsWith('/') ? '/' : 'C:/')
+          // Local workspaces: don't pass actions so no ... menu is generated
+          const localHostRootId = 'local:hostroot'
+          nextWorkspaceViews.set(localHostRootId, {
+            workspaceId: localHostRootId,
+            path: localDriveRoot,
+            title: '本地',
+            sessionIds: [],
+            actions: undefined,
+            createdAt: undefined,
+            updatedAt: new Date().toISOString(),
+          })
+        }
 
-      const allSessions = Array.isArray(body.sessions) ? body.sessions : []
-      sessionParents.clear()
-      rawToNamespaced.clear()
-      for (const s of allSessions) {
-        if (s && s.sessionId) {
-          const sid = String(s.sessionId)
-          if (isNamespacedRemoteId(sid)) {
-            const raw = sid.split(':').slice(2).map(decodeURIComponent).join(':')
-            rawToNamespaced.set(raw, sid)
+        syncHostFoldingStyles(['local', ...activeHosts])
+
+        // Populate full session list into ctx.sessions (including subagents and projections)
+        const sourceSessions = allSessions.length > 0
+          ? allSessions
+          : (body.workspaces || []).flatMap((ws) => ws.sessions || [])
+
+        for (const s of sourceSessions) {
+          if (!s || !s.sessionId) continue
+          const id = String(s.sessionId)
+          nextSessionIds.add(id)
+          nextSessions.push({
+            id,
+            sessionId: id,
+            title: typeof s.title === 'string' ? s.title : undefined,
+            displayTitle: typeof s.title === 'string' && s.title !== '' ? s.title : id,
+            cwd: typeof s.cwd === 'string' ? s.cwd : undefined,
+            running: Boolean(s.running),
+            blank: Boolean(s.blank),
+            updatedAt: typeof s.updatedAt === 'number' ? s.updatedAt : Date.now(),
+            origin: typeof s.origin === 'string' ? s.origin : undefined,
+            parentSessionId: typeof s.parentSessionId === 'string' ? s.parentSessionId : undefined,
+            parentId: typeof s.parentSessionId === 'string' ? s.parentSessionId : undefined,
+            projections: s.projections,
+            retainedBy: {},
+          })
+
+          // Synchronize pending interactions with remote session status
+          if (s.pendingInteraction) {
+            if (!activeInteractions.has(id)) {
+              void timedFetch(`${SESSION_PENDING_INTERACTION_ROUTE}?sessionId=${encodeURIComponent(id)}`, {}, 15_000)
+                .then((r) => r.json())
+                .then((data) => {
+                  if (data && data.ok && data.value && data.value.pending) {
+                    handleInteractionRequest(data.value.pending)
+                  }
+                })
+                .catch(() => {})
+            }
+          } else if (activeInteractions.has(id)) {
+            const cur = activeInteractions.get(id)
+            if (cur) handleInteractionCancel(cur.eventId, id)
           }
         }
-        if (s && s.sessionId && s.parentSessionId) {
-          const child = String(s.sessionId)
-          const parent = String(s.parentSessionId)
-          sessionParents.set(child, parent)
-          if (isNamespacedRemoteId(child)) {
-            const rawChild = child.split(':').slice(2).map(decodeURIComponent).join(':')
-            sessionParents.set(rawChild, parent)
-            if (isNamespacedRemoteId(parent)) {
-              const rawParent = parent.split(':').slice(2).map(decodeURIComponent).join(':')
-              sessionParents.set(child, rawParent)
-              sessionParents.set(rawChild, rawParent)
+
+        cachedWorkspaceViews = [...nextWorkspaceViews.values()]
+
+        // Sessions: drop remote rows absent from this snapshot, then upsert the rest.
+        if (sessions && typeof sessions.handleSessionRemoved === 'function') {
+          for (const id of remoteSessionIds) {
+            if (!nextSessionIds.has(id)) sessions.handleSessionRemoved(id)
+          }
+        }
+        if (sessions && typeof sessions.handleSessionAdded === 'function') {
+          for (const s of nextSessions) {
+            sessions.handleSessionAdded(s)
+            if (typeof sessions.handleSessionStatus === 'function') {
+              sessions.handleSessionStatus(s.sessionId, Boolean(s.running))
             }
           }
         }
-      }
 
-      // Register one collapsed host-root folder per connected host (path = remote
-      // home), so the official workspace-tree grouping nests every workspace beneath
-      // its host: host (server icon + truncated name) -> workspace (folder + name) -> sessions.
-      const homes = Array.isArray(body.homes) && body.homes.length > 0
-        ? body.homes
-        : (Array.isArray(body.hosts) ? body.hosts.map((h) => ({ host: h, home: body.home || '~' })) : [])
-
-      if (homes.length === 0 && body.host) {
-        homes.push({ host: body.host, home: body.home || '~' })
-      }
-
-      const activeHosts = new Set()
-      for (const item of homes) {
-        const host = typeof item.host === 'string' ? item.host.trim() : ''
-        if (!host) continue
-        activeHosts.add(host)
-        const home = typeof item.home === 'string' && item.home ? item.home : '~'
-        const hostRootId = `remote:${host}:hostroot`
-        nextWorkspaceViews.set(hostRootId, {
-          workspaceId: hostRootId,
-          path: home,
-          title: formatHostLabel(host),
-          sessionIds: [],
-          createdAt: undefined,
-          updatedAt: new Date().toISOString(),
-        })
-      }
-
-      for (const ws of body.workspaces) {
-        if (!ws || typeof ws.cwd !== 'string') continue
-        if (typeof ws.workspaceId === 'string' && ws.workspaceId.startsWith('remote:')) {
-          const parts = ws.workspaceId.split(':')
-          if (parts.length >= 3) {
-            const h = decodeURIComponent(parts[1])
-            if (h) activeHosts.add(h)
+        // Workspaces: remove vanished synthetic groups, then (re)upsert current ones.
+        if (workspaces && typeof workspaces.removeView === 'function') {
+          for (const wid of injectedWorkspaceIds) {
+            if (!nextWorkspaceViews.has(wid)) workspaces.removeView(wid)
           }
         }
-        // Root workspace view only lists direct sessions (subagents excluded)
-        const sessionIds = (ws.sessions || []).map((s) => String(s.sessionId))
-        const workspaceId = ws.workspaceId || `remote:${ws.cwd}`
-        const cleanName = ws.name ? ws.name.replace(/^\[[^\]]+\]\s*/, '') : ''
-        nextWorkspaceViews.set(workspaceId, {
-          workspaceId,
-          path: ws.cwd,
-          title: cleanName || '未知工作区',
-          sessionIds,
-          createdAt: new Date().toISOString(),
-          updatedAt: new Date().toISOString(),
-        })
-      }
-      // Discover local workspaces from ctx.workspaces.list and register a "本地" host root
-      // so all local workspaces are neatly nested under [本地] fold menu just like remote hosts.
-      const allItems = (workspaces && Array.isArray(workspaces.items)) ? workspaces.items : []
-      const localWorkspaces = allItems.filter((it) => it && it.workspaceId && !isRemoteStateId(it.workspaceId) && !it.workspaceId.endsWith(':hostroot'))
-      if (localWorkspaces.length > 0) {
-        const firstLocalPath = localWorkspaces[0]?.path || ''
-        const driveMatch = firstLocalPath.match(/^([A-Za-z]:[/\\])/)
-        const localDriveRoot = driveMatch ? driveMatch[1].replace(/\\/g, '/') : (firstLocalPath.startsWith('/') ? '/' : 'C:/')
-        // Local workspaces: don't pass actions so no ... menu is generated
-        const localHostRootId = 'local:hostroot'
-        nextWorkspaceViews.set(localHostRootId, {
-          workspaceId: localHostRootId,
-          path: localDriveRoot,
-          title: '本地',
-          sessionIds: [],
-          actions: undefined,
-          createdAt: undefined,
-          updatedAt: new Date().toISOString(),
-        })
-      }
-
-      syncHostFoldingStyles(['local', ...activeHosts])
-
-      // Populate full session list into ctx.sessions (including subagents and projections)
-      const sourceSessions = allSessions.length > 0
-        ? allSessions
-        : (body.workspaces || []).flatMap((ws) => ws.sessions || [])
-
-      for (const s of sourceSessions) {
-        if (!s || !s.sessionId) continue
-        const id = String(s.sessionId)
-        nextSessionIds.add(id)
-        nextSessions.push({
-          id,
-          sessionId: id,
-          title: typeof s.title === 'string' ? s.title : undefined,
-          displayTitle: typeof s.title === 'string' && s.title !== '' ? s.title : id,
-          cwd: typeof s.cwd === 'string' ? s.cwd : undefined,
-          running: Boolean(s.running),
-          blank: Boolean(s.blank),
-          updatedAt: typeof s.updatedAt === 'number' ? s.updatedAt : Date.now(),
-          origin: typeof s.origin === 'string' ? s.origin : undefined,
-          parentSessionId: typeof s.parentSessionId === 'string' ? s.parentSessionId : undefined,
-          parentId: typeof s.parentSessionId === 'string' ? s.parentSessionId : undefined,
-          projections: s.projections,
-          retainedBy: {},
-        })
-
-        // Synchronize pending interactions with remote session status
-        if (s.pendingInteraction) {
-          if (!activeInteractions.has(id)) {
-            void fetch(`${SESSION_PENDING_INTERACTION_ROUTE}?sessionId=${encodeURIComponent(id)}`)
-              .then((r) => r.json())
-              .then((data) => {
-                if (data && data.ok && data.value && data.value.pending) {
-                  handleInteractionRequest(data.value.pending)
-                }
-              })
-              .catch(() => {})
+        if (workspaces && typeof workspaces.upsertView === 'function') {
+          if (workspaces.removedIds && typeof workspaces.removedIds.delete === 'function') {
+            for (const wid of nextWorkspaceViews.keys()) {
+              workspaces.removedIds.delete(wid)
+            }
           }
-        } else if (activeInteractions.has(id)) {
-          const cur = activeInteractions.get(id)
-          if (cur) handleInteractionCancel(cur.eventId, id)
-        }
-      }
-
-      cachedWorkspaceViews = [...nextWorkspaceViews.values()]
-
-      // Sessions: drop remote rows absent from this snapshot, then upsert the rest.
-      if (sessions && typeof sessions.handleSessionRemoved === 'function') {
-        for (const id of remoteSessionIds) {
-          if (!nextSessionIds.has(id)) sessions.handleSessionRemoved(id)
-        }
-      }
-      if (sessions && typeof sessions.handleSessionAdded === 'function') {
-        for (const s of nextSessions) {
-          sessions.handleSessionAdded(s)
-          if (typeof sessions.handleSessionStatus === 'function') {
-            sessions.handleSessionStatus(s.sessionId, Boolean(s.running))
+          for (let i = cachedWorkspaceViews.length - 1; i >= 0; i--) {
+            workspaces.upsertView(cachedWorkspaceViews[i])
           }
         }
-      }
 
-      // Workspaces: remove vanished synthetic groups, then (re)upsert current ones.
-      if (workspaces && typeof workspaces.removeView === 'function') {
-        for (const wid of injectedWorkspaceIds) {
-          if (!nextWorkspaceViews.has(wid)) workspaces.removeView(wid)
-        }
-      }
-      if (workspaces && typeof workspaces.upsertView === 'function') {
-        if (workspaces.removedIds && typeof workspaces.removedIds.delete === 'function') {
-          for (const wid of nextWorkspaceViews.keys()) {
-            workspaces.removedIds.delete(wid)
-          }
-        }
-        for (let i = cachedWorkspaceViews.length - 1; i >= 0; i--) {
-          workspaces.upsertView(cachedWorkspaceViews[i])
-        }
-      }
+        remoteSessionIds.clear()
+        for (const id of nextSessionIds) remoteSessionIds.add(id)
+        injectedWorkspaceIds = new Set(nextWorkspaceViews.keys())
 
-      remoteSessionIds.clear()
-      for (const id of nextSessionIds) remoteSessionIds.add(id)
-      injectedWorkspaceIds = new Set(nextWorkspaceViews.keys())
-
-      // Synchronize archived and pinned sessions into official workspace list
-      syncArchivedSessions(ctx)
-      syncPinnedSessions(ctx)
+        // Synchronize archived and pinned sessions into official workspace list
+        syncArchivedSessions(ctx)
+        syncPinnedSessions(ctx)
+      } finally {
+        isReconciling = false
+      }
     }
 
     /** Wrap `ctx.remote.session` so remote ids are served from the tunnel, locals unchanged. */
@@ -837,15 +862,31 @@ window.__ModuleLoader__.load({
               const reader = res.body.getReader()
               const decoder = new TextDecoder()
               let buffer = ''
+              const READ_CHUNK_TIMEOUT_MS = 20_000
               try {
                 while (true) {
-                  const { done, value } = await reader.read()
+                  let timeoutId = null
+                  const timeoutPromise = new Promise((_, reject) => {
+                    timeoutId = setTimeout(() => {
+                      reject(new Error('SSE read chunk idle timeout'))
+                    }, READ_CHUNK_TIMEOUT_MS)
+                  })
+
+                  let readResult
+                  try {
+                    readResult = await Promise.race([reader.read(), timeoutPromise])
+                  } finally {
+                    if (timeoutId !== null) clearTimeout(timeoutId)
+                  }
+
+                  const { done, value } = readResult
                   if (done) break
                   buffer += typeof value === 'string' ? value : decoder.decode(value, { stream: true })
                   const parts = buffer.split('\n\n')
                   buffer = parts.pop() || ''
                   for (const part of parts) {
                     const trimmed = part.trim()
+                    if (trimmed.startsWith(':')) continue
                     if (!trimmed.startsWith('data:')) continue
                     const jsonText = trimmed.slice(5).trim()
                     if (!jsonText) continue
@@ -1892,7 +1933,7 @@ window.__ModuleLoader__.load({
             --dsh-workspace-indent: 0px !important;
             padding-inline-start: 8px !important;
           }
-          div[class*="groupSection"]:has(div[data-row-key^="workspace:"]:not([data-row-key$=":hostroot"])) div[data-row-key^="session:"] {
+          div[class*="groupSection"].dsh-has-remote-ws div[data-row-key^="session:"] {
             --dsh-workspace-indent: 0px !important;
             padding-inline-start: 8px !important;
           }
@@ -1917,7 +1958,7 @@ window.__ModuleLoader__.load({
           }
 
           /* Level 3: Session title aligns pixel-perfect with workspace title (matching 6px gap) */
-          div[class*="groupSection"]:has(div[data-row-key^="workspace:"]:not([data-row-key$=":hostroot"])) div[data-row-key^="session:"] span[class*="title"] {
+          div[class*="groupSection"].dsh-has-remote-ws div[data-row-key^="session:"] span[class*="title"] {
             margin-left: 6px !important;
           }
 
@@ -3031,6 +3072,12 @@ window.__ModuleLoader__.load({
           titleEl.setAttribute('title', `远程主机: ${match[1]}`)
         }
 
+        // Tag ancestor groupSection with dsh-has-remote-ws to avoid CSS :has() selector evaluation
+        const groupSection = row.closest?.('div[class*="groupSection"]')
+        if (groupSection && !groupSection.classList.contains('dsh-has-remote-ws')) {
+          groupSection.classList.add('dsh-has-remote-ws')
+        }
+
         const actions = row.querySelector('span[class*="rowActions"]') || row.querySelector('.dsh-host-row-actions')
         if (actions && match) {
           // Remote Host: add workspace button with globe badge
@@ -3957,6 +4004,11 @@ window.__ModuleLoader__.load({
 
       ctx.effect(() => () => {
         clearInterval(timer)
+        if (clientAbortController) {
+          try { clientAbortController.abort() } catch {}
+          clientAbortController = typeof AbortController !== 'undefined' ? new AbortController() : null
+        }
+        registerPendingPublisher = null
         restoreProxy()
         restoreGuardian()
         restoreStyles()
