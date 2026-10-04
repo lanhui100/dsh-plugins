@@ -632,32 +632,23 @@ for (const listener of mutationListeners) {
 
 // 8. Test Host Root row action buttons:
 //    - Remote hostroot row has a pure icon button on the right with globe badge.
-//    - Local hostroot row has the official/proxy add workspace button on the right.
 const remoteHostRow = doc.createElement('div')
 remoteHostRow.setAttribute('data-row-key', 'workspace:remote:dev:hostroot')
+const rowActions = doc.createElement('span')
+rowActions.className = 'Rows_module_css_rowActions'
+remoteHostRow.appendChild(rowActions)
 doc.body.appendChild(remoteHostRow)
-
-const localHostRow = doc.createElement('div')
-localHostRow.setAttribute('data-row-key', 'workspace:local:hostroot')
-doc.body.appendChild(localHostRow)
 
 for (const listener of mutationListeners) {
   listener()
 }
 await new Promise((resolve) => setTimeout(resolve, 50))
 
-const remoteActions = remoteHostRow.querySelector('.dsh-host-row-actions')
-assert.ok(remoteActions, 'Remote hostroot must render a .dsh-host-row-actions container')
-const remoteAddBtn = remoteActions.querySelector('.dsh-host-action-btn--remote')
+const remoteAddBtn = remoteHostRow.querySelector('.dsh-host-action-btn--remote')
 assert.ok(remoteAddBtn, 'Remote hostroot must render .dsh-host-action-btn--remote button')
 assert.equal(remoteAddBtn.getAttribute('aria-label'), '添加远程工作区 (dev)', 'Remote add button must have specific label')
 assert.ok(remoteAddBtn.querySelector('svg'), 'Remote add button must render SVG')
 assert.match(source, /\.dsh-host-action-btn--remote::after/, 'CSS must include miniature globe badge for remote button')
-
-const localActions = localHostRow.querySelector('.dsh-host-row-actions')
-assert.ok(localActions, 'Local hostroot must render a .dsh-host-row-actions container')
-const localAddBtn = localActions.querySelector('.dsh-host-action-btn--local') || localActions.querySelector('button')
-assert.ok(localAddBtn, 'Local hostroot must render add workspace button on the right')
 
 // 8b. Click remote add button -> opens dedicated popover for dev host
 remoteAddBtn.click()

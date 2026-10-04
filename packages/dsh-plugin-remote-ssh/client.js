@@ -1637,25 +1637,19 @@ window.__ModuleLoader__.load({
           }
           /* Hide the official actions menu on hostroot row (no rename/delete workspace on host) */
           div[data-row-key$=":hostroot"] span[class*="rowActions"] {
-            display: none !important;
-          }
-
-          /* Host row action container on the far right */
-          div[data-row-key$=":hostroot"] .dsh-host-row-actions {
-            order: 4 !important;
-            margin-left: auto !important;
             display: inline-flex !important;
+            margin-left: auto !important;
+            order: 4 !important;
             align-items: center !important;
             gap: 4px !important;
-            flex: none !important;
-            padding-right: 2px !important;
-            opacity: 0.8;
-            transition: opacity 120ms ease;
           }
-          div[data-row-key$=":hostroot"]:hover .dsh-host-row-actions,
-          div[data-row-key$=":hostroot"]:focus-within .dsh-host-row-actions,
-          div[data-row-key$=":hostroot"] .dsh-host-row-actions.dsh-popover-open {
-            opacity: 1 !important;
+          /* In hostroot, hide the ... menu (rename/delete) and the new session button */
+          div[data-row-key$=":hostroot"] span[class*="rowActions"] > button {
+            display: none !important;
+          }
+          /* Only display our custom host add-workspace button */
+          div[data-row-key$=":hostroot"] span[class*="rowActions"] > button.dsh-host-action-btn {
+            display: inline-flex !important;
           }
 
           /* Pure icon buttons for host row (local and remote) */
@@ -2717,9 +2711,8 @@ window.__ModuleLoader__.load({
 
     /**
      * Decorate first-level host-root rows: surface the full host alias in the title tooltip
-     * and inject action buttons (Add Workspace) on the right of the host menu row.
-     * The server icon is rendered via CSS ::after mask — no DOM nodes inside React-managed
-     * elements are touched, preventing React removeChild crashes on toggle.
+     * and inject the remote add-workspace button on the remote host menu row.
+     * DOM operations are carefully constrained to avoid modifying React's internal child nodes.
      */
     function decorateHostRoots(ctx) {
       if (typeof document === 'undefined') return
@@ -2732,15 +2725,8 @@ window.__ModuleLoader__.load({
           titleEl.setAttribute('title', `远程主机: ${match[1]}`)
         }
 
-        // Host row actions container
-        let actions = row.querySelector('.dsh-host-row-actions')
-        if (!actions) {
-          actions = document.createElement('span')
-          actions.className = 'dsh-host-row-actions'
-          row.appendChild(actions)
-        }
-
-        if (match) {
+        const actions = row.querySelector('span[class*="rowActions"]') || row.querySelector('.dsh-host-row-actions')
+        if (actions && match) {
           // Remote Host: add workspace button with globe badge
           const remoteHost = match[1]
           let addBtn = actions.querySelector('.dsh-host-action-btn--remote')
@@ -2756,33 +2742,6 @@ window.__ModuleLoader__.load({
               void openRemoteHostAddWorkspacePopover(addBtn, remoteHost, ctx)
             })
             actions.appendChild(addBtn)
-          }
-        } else if (key === 'workspace:local:hostroot') {
-          // Local Host: relocate official add workspace button or proxy
-          const officialHeaderActions = findWorkspaceHeaderActions()
-          const officialAddBtn = officialHeaderActions
-            ? officialHeaderActions.querySelector('button[aria-label="添加工作区"], button[aria-keyshortcuts*="workspace.add"]') ||
-              officialHeaderActions.children[officialHeaderActions.children.length - 1]
-            : null
-
-          if (officialAddBtn && officialAddBtn.parentElement !== actions) {
-            // Move official button into local host actions
-            actions.appendChild(officialAddBtn)
-          } else if (!officialAddBtn && !actions.querySelector('.dsh-host-action-btn--local')) {
-            // Fallback proxy button if official button not found yet
-            const proxyBtn = document.createElement('button')
-            proxyBtn.type = 'button'
-            proxyBtn.className = 'dsh-host-action-btn dsh-host-action-btn--local'
-            proxyBtn.setAttribute('aria-label', '添加工作区')
-            proxyBtn.innerHTML = ADD_WORKSPACE_ICON_SVG
-            proxyBtn._dshTooltipDisposer = attachTooltip(proxyBtn, '添加工作区', { side: 'bottom', delayMs: TOOLTIP_DELAY_MS })
-            proxyBtn.addEventListener('click', (ev) => {
-              if (ev && typeof ev.stopPropagation === 'function') ev.stopPropagation()
-              const officialHdr = findWorkspaceHeaderActions()
-              const origBtn = officialHdr ? officialHdr.querySelector('button[aria-label="添加工作区"]') : null
-              if (origBtn) origBtn.click()
-            })
-            actions.appendChild(proxyBtn)
           }
         }
       }
