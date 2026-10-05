@@ -45,6 +45,10 @@ window.__ModuleLoader__.load({
     const SESSION_FILE_UPLOAD_ROUTE = '/remote-ssh/file-upload'
     const SESSION_COMMANDS_LIST_ROUTE = '/remote-ssh/commands-list'
     const SESSION_COMMANDS_EXECUTE_ROUTE = '/remote-ssh/commands-execute'
+    const WORKSPACE_FILE_STAT_ROUTE = '/remote-ssh/workspace-file-stat'
+    const WORKSPACE_FILE_READ_ROUTE = '/remote-ssh/workspace-file-read'
+    const WORKSPACE_FILE_READ_BYTES_ROUTE = '/remote-ssh/workspace-file-read-bytes'
+    const WORKSPACE_FILE_LIST_ROUTE = '/remote-ssh/workspace-file-list'
     const AVAILABLE_HOSTS_ROUTE = '/remote-ssh/available-hosts'
     const ADD_HOST_ROUTE = '/remote-ssh/add-host'
     const REMOVE_HOST_ROUTE = '/remote-ssh/remove-host'
@@ -4197,6 +4201,152 @@ window.__ModuleLoader__.load({
     }
 
     /**
+     * Wrap `ctx.remote.workspaceFiles` so remote session file operations (`stat`, `read`,
+     * `readBytes`, `list`) are forwarded through the SSH tunnel to the remote DSH instance.
+     */
+    function installWorkspaceFilesProxy(ctx) {
+      const isRemote = (id) => id !== undefined && (remoteSessionIds.has(id) || isNamespacedRemoteId(id) || rawToNamespaced.has(id))
+      const wfNs = (ctx.remote && ctx.remote.workspaceFiles) || ctx['remote.workspaceFiles']
+      if (!wfNs) return () => {}
+
+      const methods = ['stat', 'read', 'readBytes', 'list']
+      const saved = new Map()
+      for (const method of methods) {
+        const desc = Object.getOwnPropertyDescriptor(wfNs, method)
+        if (desc) saved.set(method, desc)
+      }
+
+      const origCall = (method, args) => {
+        const desc = saved.get(method)
+        if (!desc) return undefined
+        if (typeof desc.get === 'function') {
+          const fn = desc.get.call(wfNs)
+          return typeof fn === 'function' ? fn(...args) : undefined
+        }
+        if (typeof desc.value === 'function') {
+          return desc.value.apply(wfNs, args)
+        }
+        return undefined
+      }
+
+      const wrap = {
+        stat: async (...args) => {
+          const sessionId = args[0]
+          if (!isRemote(sessionId)) return origCall('stat', args)
+          const path = args[1]
+          const signal = args[2]
+          try {
+            const res = await fetch(WORKSPACE_FILE_STAT_ROUTE, {
+              method: 'POST',
+              headers: { 'content-type': 'application/json', accept: 'application/json' },
+              body: JSON.stringify({ sessionId, path }),
+              signal,
+            })
+            const data = await res.json().catch(() => null)
+            if (data && typeof data === 'object' && 'ok' in data) return data
+            return { ok: false, error: new Error((data && data.message) || `HTTP ${res.status}`) }
+          } catch (error) {
+            return { ok: false, error: error instanceof Error ? error : new Error(String(error)) }
+          }
+        },
+        read: async (...args) => {
+          const sessionId = args[0]
+          if (!isRemote(sessionId)) return origCall('read', args)
+          const path = args[1]
+          const range = args[2]
+          const signal = args[3]
+          try {
+            const res = await fetch(WORKSPACE_FILE_READ_ROUTE, {
+              method: 'POST',
+              headers: { 'content-type': 'application/json', accept: 'application/json' },
+              body: JSON.stringify({ sessionId, path, range }),
+              signal,
+            })
+            const data = await res.json().catch(() => null)
+            if (data && typeof data === 'object' && 'ok' in data) return data
+            return { ok: false, error: new Error((data && data.message) || `HTTP ${res.status}`) }
+          } catch (error) {
+            return { ok: false, error: error instanceof Error ? error : new Error(String(error)) }
+          }
+        },
+        readBytes: async (...args) => {
+          const sessionId = args[0]
+          if (!isRemote(sessionId)) return origCall('readBytes', args)
+          const path = args[1]
+          const options = args[2]
+          const signal = args[3]
+          try {
+            const res = await fetch(WORKSPACE_FILE_READ_BYTES_ROUTE, {
+              method: 'POST',
+              headers: { 'content-type': 'application/json', accept: 'application/json' },
+              body: JSON.stringify({ sessionId, path, options }),
+              signal,
+            })
+            const envelope = await res.json().catch(() => null)
+            if (envelope && typeof envelope === 'object' && envelope.ok && envelope.value) {
+              const val = envelope.value
+              let dataBytes = new Uint8Array(0)
+              if (typeof val.dataBase64 === 'string') {
+                const binStr = atob(val.dataBase64)
+                dataBytes = new Uint8Array(binStr.length)
+                for (let i = 0; i < binStr.length; i++) {
+                  dataBytes[i] = binStr.charCodeAt(i)
+                }
+              }
+              return {
+                ok: true,
+                value: {
+                  absolutePath: val.absolutePath,
+                  version: val.version,
+                  bytes: val.bytes,
+                  offset: val.offset,
+                  data: dataBytes,
+                  eof: val.eof,
+                },
+              }
+            }
+            if (envelope && typeof envelope === 'object' && 'ok' in envelope) return envelope
+            return { ok: false, error: new Error((envelope && envelope.message) || `HTTP ${res.status}`) }
+          } catch (error) {
+            return { ok: false, error: error instanceof Error ? error : new Error(String(error)) }
+          }
+        },
+        list: async (...args) => {
+          const sessionId = args[0]
+          if (!isRemote(sessionId)) return origCall('list', args)
+          const path = args[1]
+          const signal = args[2]
+          try {
+            const res = await fetch(WORKSPACE_FILE_LIST_ROUTE, {
+              method: 'POST',
+              headers: { 'content-type': 'application/json', accept: 'application/json' },
+              body: JSON.stringify({ sessionId, path }),
+              signal,
+            })
+            const data = await res.json().catch(() => null)
+            if (data && typeof data === 'object' && 'ok' in data) return data
+            return { ok: false, error: new Error((data && data.message) || `HTTP ${res.status}`) }
+          } catch (error) {
+            return { ok: false, error: error instanceof Error ? error : new Error(String(error)) }
+          }
+        },
+      }
+
+      for (const method of Object.keys(wrap)) {
+        if (!saved.has(method)) continue
+        Object.defineProperty(wfNs, method, {
+          configurable: true,
+          enumerable: true,
+          get: () => wrap[method],
+        })
+      }
+
+      return () => {
+        for (const [method, desc] of saved) Object.defineProperty(wfNs, method, desc)
+      }
+    }
+
+    /**
      * Intercept host file selection and drops for remote sessions:
      * When users click '+' -> 'File' (or drag & drop files from the host into
      * the composer), stock desktop logic uses hostPathBridge to turn non-image
@@ -4376,6 +4526,7 @@ window.__ModuleLoader__.load({
       const restoreProxy = installSessionProxy(ctx)
       const restoreFileUpload = installFileUploadProxy(ctx)
       const restoreCommands = installCommandsProxy(ctx)
+      const restoreWorkspaceFiles = installWorkspaceFilesProxy(ctx)
       const restoreFileCommand = ensureFileCommandForRemoteSessions(ctx)
       const restoreAttachmentInterceptor = installRemoteAttachmentInterceptor(ctx)
       const restoreGuardian = installWorkspaceGuardian(ctx)
@@ -4427,6 +4578,7 @@ window.__ModuleLoader__.load({
         restoreProxy()
         restoreFileUpload()
         restoreCommands()
+        restoreWorkspaceFiles()
         restoreFileCommand()
         restoreAttachmentInterceptor()
         restoreGuardian()
@@ -4447,7 +4599,7 @@ window.__ModuleLoader__.load({
 
     exports.apply = apply
     exports.removeRemoteHost = removeRemoteHost
-    exports.inject = ['workspaces', 'sessions', 'remote', 'remote.session', 'remote.workspace', 'fileUpload', 'remote.commands']
+    exports.inject = ['workspaces', 'sessions', 'remote', 'remote.session', 'remote.workspace', 'fileUpload', 'remote.commands', 'remote.workspaceFiles']
     return module.exports
   },
 })

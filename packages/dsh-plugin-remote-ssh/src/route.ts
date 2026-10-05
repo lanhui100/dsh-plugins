@@ -70,6 +70,18 @@ export const SESSION_COMMANDS_LIST_ROUTE = '/remote-ssh/commands-list'
 /** Absolute pathname for executing a command in a remote session. */
 export const SESSION_COMMANDS_EXECUTE_ROUTE = '/remote-ssh/commands-execute'
 
+/** Absolute pathname for stat of a remote workspace file. */
+export const WORKSPACE_FILE_STAT_ROUTE = '/remote-ssh/workspace-file-stat'
+
+/** Absolute pathname for reading a remote text workspace file. */
+export const WORKSPACE_FILE_READ_ROUTE = '/remote-ssh/workspace-file-read'
+
+/** Absolute pathname for reading raw bytes of a remote workspace file. */
+export const WORKSPACE_FILE_READ_BYTES_ROUTE = '/remote-ssh/workspace-file-read-bytes'
+
+/** Absolute pathname for listing children of a remote workspace directory. */
+export const WORKSPACE_FILE_LIST_ROUTE = '/remote-ssh/workspace-file-list'
+
 /** Absolute pathname for querying unadded key-configured SSH hosts from ~/.ssh/config. */
 export const AVAILABLE_HOSTS_ROUTE = '/remote-ssh/available-hosts'
 
@@ -1655,5 +1667,131 @@ export function registerRemoteSshRoute(
         }
       },
     }), 'remote-ssh: session commands execute route')
+
+    scoped.effect(() => scoped.webServer.register({
+      kind: 'exact',
+      path: WORKSPACE_FILE_STAT_ROUTE,
+      handler: async (req, res) => {
+        try {
+          const body = await readJsonBody(req)
+          const rawSessionId = typeof body.sessionId === 'string' ? body.sessionId.trim() : undefined
+          const path = typeof body.path === 'string' ? body.path : undefined
+          if (!rawSessionId || path === undefined) {
+            sendJson(res, 400, { ok: false, error: { message: 'Fields "sessionId" and "path" are required' } })
+            return
+          }
+          const target = resolveTarget(rawSessionId)
+          if (target.caller === undefined) {
+            sendJson(res, 503, { ok: false, error: { message: 'tunnel-not-ready' } })
+            return
+          }
+          const result = await target.caller.statRemoteWorkspaceFile(target.originalSessionId, path)
+          sendJson(res, 200, { ok: true, value: result })
+        } catch (error) {
+          sendJson(res, 200, {
+            ok: false,
+            error: { message: error instanceof Error ? error.message : String(error) },
+          })
+        }
+      },
+    }), 'remote-ssh: workspace file stat route')
+
+    scoped.effect(() => scoped.webServer.register({
+      kind: 'exact',
+      path: WORKSPACE_FILE_READ_ROUTE,
+      handler: async (req, res) => {
+        try {
+          const body = await readJsonBody(req)
+          const rawSessionId = typeof body.sessionId === 'string' ? body.sessionId.trim() : undefined
+          const path = typeof body.path === 'string' ? body.path : undefined
+          const range = typeof body.range === 'object' && body.range !== null ? body.range : undefined
+          if (!rawSessionId || path === undefined) {
+            sendJson(res, 400, { ok: false, error: { message: 'Fields "sessionId" and "path" are required' } })
+            return
+          }
+          const target = resolveTarget(rawSessionId)
+          if (target.caller === undefined) {
+            sendJson(res, 503, { ok: false, error: { message: 'tunnel-not-ready' } })
+            return
+          }
+          const result = await target.caller.readRemoteWorkspaceFile(target.originalSessionId, path, range)
+          sendJson(res, 200, { ok: true, value: result })
+        } catch (error) {
+          sendJson(res, 200, {
+            ok: false,
+            error: { message: error instanceof Error ? error.message : String(error) },
+          })
+        }
+      },
+    }), 'remote-ssh: workspace file read route')
+
+    scoped.effect(() => scoped.webServer.register({
+      kind: 'exact',
+      path: WORKSPACE_FILE_LIST_ROUTE,
+      handler: async (req, res) => {
+        try {
+          const body = await readJsonBody(req)
+          const rawSessionId = typeof body.sessionId === 'string' ? body.sessionId.trim() : undefined
+          const path = typeof body.path === 'string' ? body.path : ''
+          if (!rawSessionId) {
+            sendJson(res, 400, { ok: false, error: { message: 'Field "sessionId" is required' } })
+            return
+          }
+          const target = resolveTarget(rawSessionId)
+          if (target.caller === undefined) {
+            sendJson(res, 503, { ok: false, error: { message: 'tunnel-not-ready' } })
+            return
+          }
+          const result = await target.caller.listRemoteWorkspaceDirectory(target.originalSessionId, path)
+          sendJson(res, 200, { ok: true, value: result })
+        } catch (error) {
+          sendJson(res, 200, {
+            ok: false,
+            error: { message: error instanceof Error ? error.message : String(error) },
+          })
+        }
+      },
+    }), 'remote-ssh: workspace file list route')
+
+    scoped.effect(() => scoped.webServer.register({
+      kind: 'exact',
+      path: WORKSPACE_FILE_READ_BYTES_ROUTE,
+      handler: async (req, res) => {
+        try {
+          const body = await readJsonBody(req)
+          const rawSessionId = typeof body.sessionId === 'string' ? body.sessionId.trim() : undefined
+          const path = typeof body.path === 'string' ? body.path : undefined
+          const options = typeof body.options === 'object' && body.options !== null ? body.options : undefined
+          if (!rawSessionId || path === undefined) {
+            sendJson(res, 400, { ok: false, error: { message: 'Fields "sessionId" and "path" are required' } })
+            return
+          }
+          const target = resolveTarget(rawSessionId)
+          if (target.caller === undefined) {
+            sendJson(res, 503, { ok: false, error: { message: 'tunnel-not-ready' } })
+            return
+          }
+          const result = await target.caller.readRemoteWorkspaceFileBytes(target.originalSessionId, path, options)
+          // Transfer Uint8Array as base64 string across JSON RPC
+          const base64 = Buffer.from(result.data.buffer, result.data.byteOffset, result.data.byteLength).toString('base64')
+          sendJson(res, 200, {
+            ok: true,
+            value: {
+              absolutePath: result.absolutePath,
+              version: result.version,
+              bytes: result.bytes,
+              offset: result.offset,
+              dataBase64: base64,
+              eof: result.eof,
+            },
+          })
+        } catch (error) {
+          sendJson(res, 200, {
+            ok: false,
+            error: { message: error instanceof Error ? error.message : String(error) },
+          })
+        }
+      },
+    }), 'remote-ssh: workspace file read-bytes route')
   })
 }

@@ -938,6 +938,199 @@ export class RemoteCaller {
       signal,
     )
   }
+
+  /**
+   * Stat a workspace file via remote DSH `workspaceFiles/stat`.
+   */
+  async statRemoteWorkspaceFile(
+    sessionId: string,
+    path: string,
+    signal?: AbortSignal,
+  ): Promise<{ absolutePath: string; version: string; bytes?: number }> {
+    return await this.invoke<{ absolutePath: string; version: string; bytes?: number }>(
+      'workspaceFiles/stat',
+      { workspaceFileScopeId: sessionId, path },
+      signal,
+    )
+  }
+
+  /**
+   * Read lines from a text workspace file via remote DSH `workspaceFiles/read`.
+   */
+  async readRemoteWorkspaceFile(
+    sessionId: string,
+    path: string,
+    range?: { offset?: number; limit?: number },
+    signal?: AbortSignal,
+  ): Promise<{
+    absolutePath: string
+    version: string
+    bytes?: number
+    offset: number
+    text: string
+    lines: number
+    eof: boolean
+  }> {
+    return await this.invoke<{
+      absolutePath: string
+      version: string
+      bytes?: number
+      offset: number
+      text: string
+      lines: number
+      eof: boolean
+    }>(
+      'workspaceFiles/read',
+      { workspaceFileScopeId: sessionId, path, range: range ?? {} },
+      signal,
+    )
+  }
+
+  /**
+   * List directory children in a remote workspace via `workspaceFiles/list`.
+   */
+  async listRemoteWorkspaceDirectory(
+    sessionId: string,
+    path: string,
+    signal?: AbortSignal,
+  ): Promise<{
+    path: string
+    entries: readonly { name: string; type: 'file' | 'directory' | 'other'; size?: number }[]
+    truncated: boolean
+  }> {
+    return await this.invoke<{
+      path: string
+      entries: readonly { name: string; type: 'file' | 'directory' | 'other'; size?: number }[]
+      truncated: boolean
+    }>(
+      'workspaceFiles/list',
+      { workspaceFileScopeId: sessionId, path: path || '.' },
+      signal,
+    )
+  }
+
+  /**
+   * Read raw bytes (or range) from a remote workspace file via `workspaceFiles/readBytes`.
+   * Unpacks multipart response if binary attachment is returned.
+   */
+  async readRemoteWorkspaceFileBytes(
+    sessionId: string,
+    path: string,
+    options?: { range?: { offset?: number; length?: number }; baseFile?: string },
+    signal?: AbortSignal,
+  ): Promise<{
+    absolutePath: string
+    version: string
+    bytes?: number
+    offset: number
+    data: Uint8Array
+    eof: boolean
+  }> {
+    await this.ensureCookie()
+    const rpcId = `remote-rb-${Date.now().toString(36)}-${Math.floor(Math.random() * 0xffff).toString(16)}`
+    const cookie = this.jar.header()
+    const response = await fetch(`${this.options.baseUrl}/api/workspaceFiles/readBytes`, {
+      method: 'POST',
+      headers: {
+        'content-type': 'application/json',
+        ...(cookie === undefined ? {} : { cookie }),
+      },
+      body: JSON.stringify({
+        type: 'client-request',
+        rpcId,
+        method: 'workspaceFiles/readBytes',
+        payload: { args: { workspaceFileScopeId: sessionId, path, options: options ?? {} } },
+      }),
+      signal: this.timeoutSignal(signal),
+    })
+
+    if (response.status === 401) {
+      this.jar.clear()
+      await this.ensureCookie()
+      return await this.readRemoteWorkspaceFileBytes(sessionId, path, options, signal)
+    }
+
+    if (!response.ok) {
+      throw new Error(`remote-ssh: transport failure for workspaceFiles/readBytes: HTTP ${String(response.status)}`)
+    }
+
+    const contentType = response.headers.get('content-type') || ''
+    if (contentType.includes('multipart/form-data')) {
+      const formData = await response.formData()
+      const metadataStr = formData.get('metadata')
+      if (typeof metadataStr !== 'string') {
+        throw new Error('remote-ssh: readBytes multipart missing metadata part')
+      }
+      const envelope = JSON.parse(metadataStr) as {
+        result?: {
+          ok: boolean
+          value?: {
+            absolutePath: string
+            version: string
+            bytes?: number
+            offset: number
+            data?: unknown
+            eof: boolean
+          }
+          error?: { code: string; message: string }
+        }
+        attachments?: readonly { path: readonly string[]; part: string }[]
+      }
+      if (!envelope.result?.ok || !envelope.result.value) {
+        throw new Error(`remote-ssh: readBytes failed: ${envelope.result?.error?.message ?? 'unknown'}`)
+      }
+      const val = envelope.result.value
+      let bytes = new Uint8Array(0)
+      const partKey = envelope.attachments?.[0]?.part ?? 'bytes-0'
+      const blob = formData.get(partKey)
+      if (blob && typeof blob === 'object' && 'arrayBuffer' in blob) {
+        const ab = await (blob as Blob).arrayBuffer()
+        bytes = new Uint8Array(ab)
+      }
+      return {
+        absolutePath: val.absolutePath,
+        version: val.version,
+        bytes: val.bytes,
+        offset: val.offset,
+        data: bytes,
+        eof: val.eof,
+      }
+    }
+
+    const envelope = (await response.json()) as RpcEnvelope
+    if (!envelope.result?.ok || !envelope.result.value) {
+      throw new Error(`remote-ssh: readBytes failed: ${envelope.result?.error?.message ?? 'unknown'}`)
+    }
+    const val = envelope.result.value as {
+      absolutePath: string
+      version: string
+      bytes?: number
+      offset: number
+      data?: Uint8Array | Record<string, number>
+      eof: boolean
+    }
+    let dataBytes: Uint8Array
+    if (val.data instanceof Uint8Array) {
+      dataBytes = val.data
+    } else if (val.data && typeof val.data === 'object') {
+      const keys = Object.keys(val.data)
+      const arr = new Uint8Array(keys.length)
+      for (let i = 0; i < keys.length; i++) {
+        arr[i] = (val.data as Record<string, number>)[i]
+      }
+      dataBytes = arr
+    } else {
+      dataBytes = new Uint8Array(0)
+    }
+    return {
+      absolutePath: val.absolutePath,
+      version: val.version,
+      bytes: val.bytes,
+      offset: val.offset,
+      data: dataBytes,
+      eof: val.eof,
+    }
+  }
 }
 
 export interface RemoteInteractionQuestionOption {

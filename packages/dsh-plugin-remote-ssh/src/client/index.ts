@@ -69,6 +69,18 @@ export const SESSION_COMMANDS_LIST_ROUTE = '/remote-ssh/commands-list'
 /** Host route for executing a command in a remote session. */
 export const SESSION_COMMANDS_EXECUTE_ROUTE = '/remote-ssh/commands-execute'
 
+/** Host route for stat of a remote workspace file. */
+export const WORKSPACE_FILE_STAT_ROUTE = '/remote-ssh/workspace-file-stat'
+
+/** Host route for reading lines of a remote text workspace file. */
+export const WORKSPACE_FILE_READ_ROUTE = '/remote-ssh/workspace-file-read'
+
+/** Host route for reading raw bytes of a remote workspace file. */
+export const WORKSPACE_FILE_READ_BYTES_ROUTE = '/remote-ssh/workspace-file-read-bytes'
+
+/** Host route for listing children of a remote workspace directory. */
+export const WORKSPACE_FILE_LIST_ROUTE = '/remote-ssh/workspace-file-list'
+
 
 /** Host route for querying remote workspaces/home directories. */
 export const REMOTE_WORKSPACES_ROUTE = '/remote-ssh/workspaces'
@@ -204,7 +216,7 @@ declare module '@deepseek-ai/cordis' {
  * Workspace and Session client models plus the Remote session and workspace
  * namespaces this half wraps.
  */
-export const inject = ['workspaces', 'sessions', 'remote', 'remote.session', 'remote.workspace', 'fileUpload', 'remote.commands']
+export const inject = ['workspaces', 'sessions', 'remote', 'remote.session', 'remote.workspace', 'fileUpload', 'remote.commands', 'remote.workspaceFiles']
 
 /**
  * Activate the integration: publish the remote snapshot into the official
@@ -279,6 +291,17 @@ export function installFileUploadProxy(ctx: Context): () => void {
  * @returns disposer restoring the original command implementations.
  */
 export function installCommandsProxy(ctx: Context): () => void {
+  void ctx
+  return () => {}
+}
+
+/**
+ * Wrap `ctx.remote.workspaceFiles` so remote session file accesses (`stat`, `read`,
+ * `readBytes`, `list`) are served through this plugin's Host routes.
+ * @param ctx - client plugin context.
+ * @returns disposer restoring original implementations.
+ */
+export function installWorkspaceFilesProxy(ctx: Context): () => void {
   void ctx
   return () => {}
 }

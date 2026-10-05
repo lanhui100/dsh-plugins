@@ -407,6 +407,19 @@ class RemoteWorkspaceService extends Service {
   }
 }
 
+class RemoteWorkspaceFilesService extends Service {
+  constructor(ctx) {
+    super(ctx, 'remote.workspaceFiles')
+    for (const method of ['stat', 'read', 'readBytes', 'list']) {
+      Object.defineProperty(this, method, {
+        configurable: true,
+        enumerable: true,
+        get: () => (...args) => ({ ok: true, value: { method, args } }),
+      })
+    }
+  }
+}
+
 class WorkspacesService extends Service {
   constructor(ctx) {
     super(ctx, 'workspaces')
@@ -466,6 +479,7 @@ root.plugin(RemoteCommandsService)
 root.plugin(RemoteService)
 root.plugin(RemoteSessionService)
 root.plugin(RemoteWorkspaceService)
+root.plugin(RemoteWorkspaceFilesService)
 root.plugin(WorkspacesService)
 root.plugin(SessionsService)
 root.plugin(UiSessionService)
