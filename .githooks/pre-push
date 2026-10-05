@@ -1,0 +1,21 @@
+#!/bin/sh
+# pre-push 门禁：远端必须是 github；复查整棵跟踪树（密钥/个人路径/禁入产物）。
+# 紧急放行：git push --no-verify（事后必须补审）。
+FORBID_CONTENT='BEGIN [A-Z ]*PRIVATE KEY|api[_-]?key[":= ]|Authorization:[ ]Bearer|token=[A-Za-z0-9_~-]{12,}|xox[bpas]-|\.credentials\.yaml|C:\\Users\\[^\\/]+|/Users/[^/]+/|/home/[^/]+/\.dsh/attachments|attachments/v1/objects'
+FORBID_PATH='node_modules/|\.pnpm-store/|\.acl-fix/|\.diag/|\.dsh-debug-extract/|packages/[^/]+/lib/|^packages/dsh-plugin-remote-ssh/test-dbg\.mjs$|\.tsbuildinfo$|\.bak-[0-9]+$'
+
+remote="$1"
+url=$(git remote get-url "$remote" 2>/dev/null)
+case "$url" in
+  *github.com*) ;;
+  *) echo "pre-push: 远端不是 github ($url)，拒绝推送"; exit 1;;
+esac
+
+fail=0
+git ls-files | grep -E "$FORBID_PATH" >/dev/null && {
+  echo "pre-push: 跟踪树含禁入产物"; git ls-files | grep -E "$FORBID_PATH"; fail=1; }
+
+git grep -nE -I "$FORBID_CONTENT" -- . ':!.githooks' && {
+  echo "pre-push: 跟踪树命中疑似密钥/个人本机路径"; fail=1; }
+
+exit $fail

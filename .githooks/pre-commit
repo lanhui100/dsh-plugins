@@ -1,0 +1,24 @@
+#!/bin/sh
+# pre-commit 门禁：密钥 / 个人本机路径 / 误带产物，一律不许入库。
+# 紧急放行：git commit --no-verify（事后必须补审）。
+FORBID_CONTENT='BEGIN [A-Z ]*PRIVATE KEY|api[_-]?key[":= ]|Authorization:[ ]Bearer|token=[A-Za-z0-9_~-]{12,}|xox[bpas]-|\.credentials\.yaml|C:\\Users\\[^\\/]+|/Users/[^/]+/|/home/[^/]+/\.dsh/attachments|attachments/v1/objects'
+FORBID_PATH='node_modules/|\.pnpm-store/|\.acl-fix/|\.diag/|\.dsh-debug-extract/|packages/[^/]+/lib/|^packages/dsh-plugin-remote-ssh/test-dbg\.mjs$|\.tsbuildinfo$|\.bak-[0-9]+$'
+
+fail=0
+staged=$(git diff --cached --name-only --diff-filter=ACMR)
+[ -z "$staged" ] && exit 0
+
+echo "$staged" | grep -E "$FORBID_PATH" >/dev/null && {
+  echo "pre-commit: 命中禁入路径"; echo "$staged" | grep -E "$FORBID_PATH"; fail=1; }
+
+echo "$staged" | grep -E '\.png$' | grep -v '^assets/' >/dev/null && {
+  echo "pre-commit: 图片只能进 assets/"; fail=1; }
+
+# 内容扫描仅针对当前暂存文件，跳过 .githooks 自身（规则文本自含模式串，人工评审它）
+filter_staged=$(echo "$staged" | grep -v '^\.githooks/')
+if [ -n "$filter_staged" ]; then
+  echo "$filter_staged" | tr '\n' '\0' | xargs -0 -r git grep --cached -nE -I "$FORBID_CONTENT" -- && {
+    echo "pre-commit: 命中疑似密钥/个人本机路径"; fail=1; }
+fi
+
+exit $fail
