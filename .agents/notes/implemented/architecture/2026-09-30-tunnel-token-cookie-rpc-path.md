@@ -14,7 +14,7 @@ Status: implemented
 - 换 cookie：经隧道 `GET /?token=<launch-token>` 返回 303 + `Set-Cookie: dsh-auth-*`。cookie 的 authority 绑定的是隧道本地 authority（`127.0.0.1:39387`），天然可用——此前"远端签发 cookie 在本地失效"的担忧不成立（失效只发生在把远端 authority 下签发的 cookie 搬到本地用的情形；经隧道交换不存在该情形）。
 - 调 RPC：`POST /api/<namespace>/<method>`，body 为 `{"type":"client-request","rpcId":…,"method":"<namespace>/<method>","payload":{"args":{…}}}`（payload 必须恰好含一个 plain-object `args` 字段；`session/list` 需 `args._request`）。实测 `session/list` 返回远端真实会话（含 sessionId/cwd/projections）。
 - launch token 来源：远端 dsh web 启动日志的 `dsh web: http://127.0.0.1:3080/?token=…` 行（进程级内存值，重启轮换）；经 SSH 读取。插件策略为"读日志→换 cookie→401 则重读重换"。
-- 不复用官方 `dsh-ssh`（专用执行通道，要求远端 helper 与 POSIX，见该包 `Config`），不直读远端签名密钥（`~/.dsh/.credentials.yaml`，无必要且越权）。
+- 不复用官方 `dsh-ssh`（专用执行通道，要求远端 helper 与 POSIX，见该包 `Config`），不直读远端签名密钥文件（远端凭证文件，无必要且越权）。
 
 ## Alternatives considered
 

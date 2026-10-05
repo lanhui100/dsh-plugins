@@ -39,7 +39,7 @@ Host preprod
   hostname 100.97.143.121
   port 4022
   user dm
-  identityfile "C:/Users/HUAWEI/.ssh/id_rsa"
+  identityfile "C:/mock-home/.ssh/id_rsa"
   LocalForward 9119 localhost:9119
 
 # Wildcard entry: must be excluded!
@@ -88,7 +88,7 @@ try {
   assert.equal(preprodEntry.hostName, '100.97.143.121')
   assert.equal(preprodEntry.port, 4022)
   assert.equal(preprodEntry.user, 'dm')
-  assert.equal(preprodEntry.identityFile, 'C:/Users/HUAWEI/.ssh/id_rsa')
+  assert.equal(preprodEntry.identityFile, 'C:/mock-home/.ssh/id_rsa')
 
   // 3. Test getAvailableSshHosts (filtering already-added hosts and excluded service hosts like github)
   const currentAdded = ['dev']

@@ -4120,6 +4120,171 @@ window.__ModuleLoader__.load({
     }
 
     /**
+     * Intercept host file selection and drops for remote sessions:
+     * When users click '+' -> 'File' (or drag & drop files from the host into
+     * the composer), stock desktop logic uses hostPathBridge to turn non-image
+     * files into local @"C:\..." file path references, which remote Linux models
+     * cannot reach.
+     *
+     * Captures <input type="file"> change and drop events on remote sessions,
+     * bypassing path-reference transformation and routing chosen files directly into
+     * conversation.createDrafts() + shell.addAttachments() for background upload via tunnel.
+     */
+    function installRemoteAttachmentInterceptor(ctx) {
+      if (typeof document === 'undefined' || typeof document.addEventListener !== 'function') return () => {}
+      const isRemote = (id) => id !== undefined && (remoteSessionIds.has(id) || isNamespacedRemoteId(id) || rawToNamespaced.has(id))
+
+      const addFilesToRemoteSession = (sessionId, files) => {
+        if (!files || files.length === 0) return
+        const conv = typeof ctx.get === 'function' ? ctx.get('conversation') : undefined
+        if (!conv || typeof conv.createDrafts !== 'function') return
+        try {
+          const drafts = conv.createDrafts(sessionId, files)
+          const inputHub = conv.input
+          let shell
+          try {
+            shell = inputHub?.shell?.(sessionId)
+          } catch (_) {}
+          if (!shell && inputHub && typeof inputHub.shellFor === 'function') {
+            const sessions = typeof ctx.get === 'function' ? ctx.get('sessions') : ctx.sessions
+            const binding = sessions?.binding?.(sessionId)
+            if (binding) shell = inputHub.shellFor(binding)
+          }
+          if (shell) {
+            if (typeof shell.addAttachments === 'function') {
+              shell.addAttachments(drafts.map((d) => d.id))
+            } else if (typeof shell.addFiles === 'function') {
+              shell.addFiles([], drafts.map((d) => d.id))
+            }
+          }
+        } catch (err) {
+          console.error('remote-ssh: addFilesToRemoteSession failed', err)
+        }
+      }
+
+      const onFileInputChangeCapture = (ev) => {
+        const target = ev.target
+        if (!target || target.type !== 'file') return
+
+        const activeContent = document.querySelector('div[data-conversation-content][data-conversation-session]')
+        const activeSessionId = activeContent?.getAttribute('data-conversation-session')
+        if (!activeSessionId || !isRemote(activeSessionId)) return
+
+        const files = target.files ? Array.from(target.files) : []
+        if (files.length === 0) return
+
+        ev.stopImmediatePropagation()
+        ev.preventDefault()
+        target.value = ''
+
+        addFilesToRemoteSession(activeSessionId, files)
+      }
+
+      const onFileDropCapture = (ev) => {
+        const activeContent = document.querySelector('div[data-conversation-content][data-conversation-session]')
+        const activeSessionId = activeContent?.getAttribute('data-conversation-session')
+        if (!activeSessionId || !isRemote(activeSessionId)) return
+
+        const composerCard = activeContent.querySelector('div[data-composer-card="true"]')
+        if (!composerCard || !composerCard.contains(ev.target)) return
+
+        if (ev.dataTransfer && ev.dataTransfer.files && ev.dataTransfer.files.length > 0) {
+          ev.stopImmediatePropagation()
+          ev.preventDefault()
+          addFilesToRemoteSession(activeSessionId, Array.from(ev.dataTransfer.files))
+        }
+      }
+
+      const onFileDragOverCapture = (ev) => {
+        const activeContent = document.querySelector('div[data-conversation-content][data-conversation-session]')
+        const activeSessionId = activeContent?.getAttribute('data-conversation-session')
+        if (!activeSessionId || !isRemote(activeSessionId)) return
+
+        const composerCard = activeContent.querySelector('div[data-composer-card="true"]')
+        if (!composerCard || !composerCard.contains(ev.target)) return
+
+        if (ev.dataTransfer && ev.dataTransfer.types && Array.from(ev.dataTransfer.types).includes('Files')) {
+          ev.preventDefault()
+        }
+      }
+
+      document.addEventListener('change', onFileInputChangeCapture, true)
+      document.addEventListener('drop', onFileDropCapture, true)
+      document.addEventListener('dragover', onFileDragOverCapture, true)
+
+      const restoreFileCommand = ensureFileCommandForRemoteSessions(ctx)
+
+      return () => {
+        if (typeof document.removeEventListener === 'function') {
+          document.removeEventListener('change', onFileInputChangeCapture, true)
+          document.removeEventListener('drop', onFileDropCapture, true)
+          document.removeEventListener('dragover', onFileDragOverCapture, true)
+        }
+        restoreFileCommand()
+      }
+    }
+
+    /**
+     * Ensure '+' command menu has 'file' action always available on remote sessions,
+     * opening the host file dialog and forwarding chosen files to the remote intake.
+     */
+    function ensureFileCommandForRemoteSessions(ctx) {
+      const isRemote = (id) => id !== undefined && (remoteSessionIds.has(id) || isNamespacedRemoteId(id) || rawToNamespaced.has(id))
+      let restoreCommand = () => {}
+      const patchCommandUi = (commandUi) => {
+        if (!commandUi || !commandUi.live || !commandUi.live.contributions) return
+        const fileCmd = commandUi.live.contributions.get('file')
+        if (!fileCmd) return
+        const origAvailable = fileCmd.available
+        const origRun = fileCmd.ui?.run
+
+        fileCmd.available = (session) => {
+          if (session && isRemote(session.sessionId)) return true
+          return typeof origAvailable === 'function' ? origAvailable(session) : true
+        }
+
+        if (fileCmd.ui && typeof fileCmd.ui === 'object') {
+          fileCmd.ui.run = (session) => {
+            if (session && isRemote(session.sessionId)) {
+              let picked = false
+              try {
+                if (typeof origRun === 'function') {
+                  origRun(session)
+                  picked = true
+                }
+              } catch (_) {}
+              if (!picked && typeof document !== 'undefined') {
+                const card = document.querySelector(`div[data-conversation-content][data-conversation-session="${session.sessionId}"] div[data-composer-card="true"]`)
+                const fileInput = card?.querySelector('input[type="file"]')
+                fileInput?.click()
+              }
+              return
+            }
+            if (typeof origRun === 'function') origRun(session)
+          }
+        }
+
+        restoreCommand = () => {
+          fileCmd.available = origAvailable
+          if (fileCmd.ui) fileCmd.ui.run = origRun
+        }
+      }
+
+      try {
+        const rootCtx = ctx.root || ctx
+        const cmdUi = typeof rootCtx.get === 'function' ? rootCtx.get('commandUi') : (typeof ctx.get === 'function' ? ctx.get('commandUi') : undefined)
+        if (cmdUi) patchCommandUi(cmdUi)
+        else if (typeof ctx.inject === 'function') {
+          ctx.inject(['commandUi'], (scoped) => {
+            patchCommandUi(typeof scoped.get === 'function' ? scoped.get('commandUi') : undefined)
+          })
+        }
+      } catch (_) {}
+
+      return () => { restoreCommand() }
+    }
+
+    /**
      * Activate the integration: publish remote workspaces/sessions into the
      * official models and wrap the session namespace for remote interception.
      * @param ctx - client plugin context with the injected service edges.
@@ -4133,6 +4298,8 @@ window.__ModuleLoader__.load({
       ensureWorkspaceTreeMode(ctx)
       const restoreProxy = installSessionProxy(ctx)
       const restoreFileUpload = installFileUploadProxy(ctx)
+      const restoreFileCommand = ensureFileCommandForRemoteSessions(ctx)
+      const restoreAttachmentInterceptor = installRemoteAttachmentInterceptor(ctx)
       const restoreGuardian = installWorkspaceGuardian(ctx)
       const restoreStyles = installStyles()
       const restoreDecorator = installTitleDecorator(ctx)
@@ -4181,6 +4348,8 @@ window.__ModuleLoader__.load({
         registerPendingPublisher = null
         restoreProxy()
         restoreFileUpload()
+        restoreFileCommand()
+        restoreAttachmentInterceptor()
         restoreGuardian()
         restoreStyles()
         restoreDecorator()

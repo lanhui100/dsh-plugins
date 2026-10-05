@@ -267,6 +267,29 @@ export function installFileUploadProxy(ctx: Context): () => void {
 }
 
 /**
+ * Intercept host file selection and drops for remote sessions:
+ * captures <input type="file"> and drop events so host files are created as
+ * conversation attachment drafts rather than converted into local path mentions.
+ * @param ctx - client plugin context.
+ * @returns disposer restoring default event handlers.
+ */
+export function installRemoteAttachmentInterceptor(ctx: Context): () => void {
+  void ctx
+  return () => {}
+}
+
+/**
+ * Ensure '+' command menu has 'file' action always available on remote sessions,
+ * opening the host file dialog and forwarding chosen files to the remote intake.
+ * @param ctx - client plugin context.
+ * @returns disposer restoring default command contributions.
+ */
+export function ensureFileCommandForRemoteSessions(ctx: Context): () => void {
+  void ctx
+  return () => {}
+}
+
+/**
  * Remove the injected remote workspace/session rows from the official models.
  * @param ctx - client plugin context.
  */

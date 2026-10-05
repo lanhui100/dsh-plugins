@@ -333,6 +333,21 @@ class FileUploadService extends Service {
   }
 }
 
+class CommandUiService extends Service {
+  constructor(ctx) {
+    super(ctx, 'commandUi')
+    this.live = {
+      contributions: new Map([
+        ['file', {
+          name: 'file',
+          available: (session) => session.sessionId === 'session-local-accepted',
+          ui: { run: (session) => { this.lastRun = session.sessionId } },
+        }],
+      ]),
+    }
+  }
+}
+
 class RemoteSessionService extends Service {
   constructor(ctx) {
     super(ctx, 'remote.session')
@@ -421,6 +436,7 @@ root.plugin(WorkspacesService)
 root.plugin(SessionsService)
 root.plugin(UiSessionService)
 root.plugin(FileUploadService)
+root.plugin(CommandUiService)
 
 const fork = root.plugin({
   name: registration.id,
@@ -710,6 +726,15 @@ assert.ok(remoteNsUpload.ok, 'Direct remote.fileUploads upload must succeed')
 assert.equal(remoteNsUpload.value?.receiptId, 'rcpt-1', 'Remote fileUploads upload must return receiptId')
 const localRemoteNsUpload = await pluginCtx.remote.fileUploads.upload('session-local-x', { data: 'QUJD' })
 assert.equal(localRemoteNsUpload.value?.method, 'upload', 'Local remote.fileUploads upload must pass through')
+
+// Remote attachment command interceptor:
+// Ensures '+' command menu's "file" command is always available on remote sessions
+const commandUi = root.get('commandUi')
+const fileCmd = commandUi.live.contributions.get('file')
+assert.ok(fileCmd, 'commandUi must register "file" contribution')
+assert.equal(fileCmd.available({ sessionId: 'session-demo-1' }), true, '"file" command must be available on remote sessions')
+assert.equal(fileCmd.available({ sessionId: 'session-local-x' }), false, '"file" command must preserve local policy for local sessions')
+assert.equal(fileCmd.available({ sessionId: 'session-local-accepted' }), true, '"file" command must preserve true for accepted local sessions')
 
 // Workspace actions: archiveSession & unarchiveSession
 // Remote branch: archiveSession forwards to /remote-ssh/session-archive and updates wsList

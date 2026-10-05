@@ -14,7 +14,7 @@ Status: implemented
 ## Decision
 
 1. **恢复自定义模型配置**：
-   从备份 `C:\Users\HUAWEI\.dsh\profiles\desktop\cordis.patch.yml.bak-1790849163584` 恢复全部配置至 `cordis.patch.yml`，找回包含 `ponyllm` 及 14 个自定义模型的完整声明与默认模型指向。
+   从桌面端 profile 恢复流程生成的带时间戳备份文件（`cordis.patch.yml.bak-*`，位于 profile 目录）恢复全部配置至 `cordis.patch.yml`，找回包含 `ponyllm` 及 14 个自定义模型的完整声明与默认模型指向。
 2. **守护官方工作区 Baseline**：
    在 `packages/dsh-plugin-remote-ssh/client.js` 中新增 `installWorkspaceGuardian`，包装 `ctx.workspaces.list.replaceBaseline`。官方推送 baseline 重构本地列表后，立即自动重新调用 `reapplyRemoteWorkspaces(ctx)`，将内存缓存的远程工作区重新写入 `items`，确保官方状态流推流不冲刷远程数据。
 3. **解除黑名单并修复 Diff 移除键**：
