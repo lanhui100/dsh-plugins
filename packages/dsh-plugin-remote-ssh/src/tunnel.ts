@@ -10,13 +10,29 @@ export interface TunnelOptions {
   remotePort: number
   /** Local loopback port the tunnel forwards to. */
   localPort: number
-  /** Delay between reconnect attempts after a loss (ms). */
+  /** Base delay between reconnect attempts after a loss (ms). */
   reconnectDelayMs?: number
+  /** Upper bound for the exponential reconnect delay (ms). */
+  reconnectMaxDelayMs?: number
+  /** SSH ServerAliveInterval seconds (default 15). */
+  serverAliveInterval?: number
+  /** SSH ServerAliveCountMax (default 3). */
+  serverAliveCountMax?: number
+  /** SSH ConnectTimeout seconds (default 10). */
+  connectTimeout?: number
+  /** Pass -o TCPKeepAlive=yes when true. */
+  tcpKeepAlive?: boolean
+  /** Max stderr lines retained for diagnostics (default 64). */
+  stderrMaxLines?: number
+  /** Injectable RNG for deterministic backoff jitter in tests. */
+  random?: () => number
 }
 
 const DEFAULT_RECONNECT_DELAY_MS = 5_000
+const DEFAULT_RECONNECT_MAX_DELAY_MS = 60_000
 const READY_TIMEOUT_MS = 90_000
 const READY_POLL_MS = 1_000
+const DEFAULT_STDERR_MAX_LINES = 64
 
 function portOpen(port: number): Promise<boolean> {
   return new Promise((resolve) => {
@@ -51,11 +67,29 @@ export class SshTunnel {
   private closed = false
   private failures = 0
   private loop: Promise<void> | undefined
+  private stderrLines: string[] = []
+  private backoffTimer: ReturnType<typeof setTimeout> | undefined
 
   constructor(private readonly options: TunnelOptions) {}
 
   private readyResolve: (() => void) | undefined
   private readyReject: ((error: Error) => void) | undefined
+
+  /** Retained stderr tail for diagnostics (most recent lines). */
+  getStderr(): string {
+    return this.stderrLines.join('\n')
+  }
+
+  private recordStderr(chunk: Buffer | string): void {
+    const text = typeof chunk === 'string' ? chunk : chunk.toString('utf8')
+    for (const line of text.split(/\r?\n/)) {
+      if (line.length > 0) this.stderrLines.push(line)
+    }
+    const cap = this.options.stderrMaxLines ?? DEFAULT_STDERR_MAX_LINES
+    if (this.stderrLines.length > cap) {
+      this.stderrLines.splice(0, this.stderrLines.length - cap)
+    }
+  }
 
   /** Start the supervise loop; resolves once the first tunnel is ready. */
   async start(): Promise<void> {
@@ -75,6 +109,10 @@ export class SshTunnel {
   /** Stop the child and the supervise loop. */
   async dispose(): Promise<void> {
     this.closed = true
+    if (this.backoffTimer !== undefined) {
+      clearTimeout(this.backoffTimer)
+      this.backoffTimer = undefined
+    }
     this.child?.kill()
     this.child = undefined
     if (this.loop !== undefined) {
@@ -109,31 +147,78 @@ export class SshTunnel {
         this.failures += 1
       }
       if (this.closed) return
-      const delay = (this.options.reconnectDelayMs ?? DEFAULT_RECONNECT_DELAY_MS) * this.failures
-      await new Promise((resolve) => { setTimeout(resolve, Math.min(delay, 60_000)) })
+      const base = (this.options.reconnectDelayMs ?? DEFAULT_RECONNECT_DELAY_MS) * Math.pow(2, this.failures - 1)
+      const cap = this.options.reconnectMaxDelayMs ?? DEFAULT_RECONNECT_MAX_DELAY_MS
+      const jitter = this.options.random ?? Math.random
+      const delay = Math.min(cap, Math.floor(jitter() * base))
+      await new Promise<void>((resolve) => {
+        this.backoffTimer = setTimeout(() => {
+          this.backoffTimer = undefined
+          resolve()
+        }, delay)
+      })
     }
   }
 
   private spawnOnce(): Promise<void> {
     const { host, remotePort, localPort } = this.options
+    const connectTimeout = this.options.connectTimeout ?? 10
+    const aliveInterval = this.options.serverAliveInterval ?? 15
+    const aliveCountMax = this.options.serverAliveCountMax ?? 3
     return new Promise((resolve, reject) => {
-      const child = spawn('ssh', [
+      const args = [
         '-N',
         '-T',
         '-o', 'ExitOnForwardFailure=yes',
         '-o', 'BatchMode=yes',
-        '-o', 'ServerAliveInterval=15',
-        '-o', 'ServerAliveCountMax=3',
+        '-o', `ConnectTimeout=${String(connectTimeout)}`,
+        '-o', `ServerAliveInterval=${String(aliveInterval)}`,
+        '-o', `ServerAliveCountMax=${String(aliveCountMax)}`,
+        ...(this.options.tcpKeepAlive === true ? ['-o', 'TCPKeepAlive=yes'] : []),
         '-L', `${String(localPort)}:127.0.0.1:${String(remotePort)}`,
         host,
-      ], { stdio: ['ignore', 'ignore', 'pipe'] })
+      ]
+      const child = spawn('ssh', args, { stdio: ['ignore', 'ignore', 'pipe'] })
       this.child = child
-      child.stderr?.resume()
+      this.stderrLines = []
+      let settled = false
+      const fail = (err: Error) => {
+        if (settled) return
+        settled = true
+        reject(err)
+      }
+      const done = () => {
+        if (settled) return
+        settled = true
+        resolve()
+      }
+      child.stderr?.on('data', (chunk) => {
+        this.recordStderr(chunk)
+        const tail = this.getStderr()
+        if (/ExitOnForwardFailure|Address already in use|bind.*failed|cannot listen to port/i.test(tail)) {
+          fail(new Error(`remote-ssh: ssh tunnel failed to bind localPort ${String(localPort)}: ${tail.trim().split('\n').pop() ?? 'unknown'}`))
+        }
+      })
       child.once('error', (error) => {
         if (this.child === child) this.child = undefined
-        reject(error)
+        fail(error)
       })
-      void waitForPort(localPort, READY_TIMEOUT_MS).then(resolve, reject)
+      child.once('exit', (code) => {
+        if (this.child === child) this.child = undefined
+        fail(new Error(`remote-ssh: ssh tunnel exited early (code ${String(code ?? 'unknown')})`))
+      })
+      void waitForPort(localPort, READY_TIMEOUT_MS).then(() => {
+        // Ready = child still alive AND stderr has no bind failure AND port is listening.
+        if (child.exitCode !== null || child.signalCode !== null) {
+          fail(new Error(`remote-ssh: ssh tunnel exited before ready (code ${String(child.exitCode ?? child.signalCode)})`))
+          return
+        }
+        if (/ExitOnForwardFailure|Address already in use|bind.*failed|cannot listen to port/i.test(this.getStderr())) {
+          fail(new Error(`remote-ssh: ssh tunnel bind failure on localPort ${String(localPort)}`))
+          return
+        }
+        done()
+      }, fail)
     })
   }
 
