@@ -43,6 +43,8 @@ window.__ModuleLoader__.load({
     const SESSION_SELECT_MODEL_ROUTE = '/remote-ssh/session-select-model'
     const SESSION_ATTACHMENT_ROUTE = '/remote-ssh/attachment'
     const SESSION_FILE_UPLOAD_ROUTE = '/remote-ssh/file-upload'
+    const SESSION_COMMANDS_LIST_ROUTE = '/remote-ssh/commands-list'
+    const SESSION_COMMANDS_EXECUTE_ROUTE = '/remote-ssh/commands-execute'
     const AVAILABLE_HOSTS_ROUTE = '/remote-ssh/available-hosts'
     const ADD_HOST_ROUTE = '/remote-ssh/add-host'
     const REMOVE_HOST_ROUTE = '/remote-ssh/remove-host'
@@ -4120,6 +4122,81 @@ window.__ModuleLoader__.load({
     }
 
     /**
+     * Wrap `ctx.remote.commands` so remote session ids query commands from the
+     * tunnel route and execute remotely. When remote catalog lookup is in progress
+     * or fails, list falls back to empty array gracefully so '+' menu never crashes.
+     */
+    function installCommandsProxy(ctx) {
+      const isRemote = (id) => id !== undefined && (remoteSessionIds.has(id) || isNamespacedRemoteId(id) || rawToNamespaced.has(id))
+      const cmdNs = (ctx.remote && ctx.remote.commands) || ctx['remote.commands']
+      if (!cmdNs) return () => {}
+
+      const methods = ['list', 'execute']
+      const saved = new Map()
+      for (const method of methods) {
+        const desc = Object.getOwnPropertyDescriptor(cmdNs, method)
+        if (desc) saved.set(method, desc)
+      }
+
+      const origCall = (method, args) => {
+        const desc = saved.get(method)
+        return desc && typeof desc.get === 'function' ? desc.get.call(cmdNs)(...args) : undefined
+      }
+
+      const wrap = {
+        list: async (...args) => {
+          const sessionId = args[0]
+          if (!isRemote(sessionId)) return origCall('list', args)
+          try {
+            const res = await fetch(SESSION_COMMANDS_LIST_ROUTE, {
+              method: 'POST',
+              headers: { 'content-type': 'application/json', accept: 'application/json' },
+              body: JSON.stringify({ sessionId }),
+            })
+            const data = await res.json().catch(() => null)
+            if (data && typeof data === 'object' && 'ok' in data) return data
+            return { ok: true, value: [] }
+          } catch (_) {
+            return { ok: true, value: [] }
+          }
+        },
+        execute: async (...args) => {
+          const sessionId = args[0]
+          if (!isRemote(sessionId)) return origCall('execute', args)
+          const line = args[1]
+          const submittedAttachments = args[2] || []
+          const signal = args[3]
+          try {
+            const res = await fetch(SESSION_COMMANDS_EXECUTE_ROUTE, {
+              method: 'POST',
+              headers: { 'content-type': 'application/json', accept: 'application/json' },
+              body: JSON.stringify({ sessionId, line, submittedAttachments }),
+              signal,
+            })
+            const data = await res.json().catch(() => null)
+            if (data && typeof data === 'object' && 'ok' in data) return data
+            return { ok: false, error: new Error((data && data.message) || `HTTP ${res.status}`) }
+          } catch (error) {
+            return { ok: false, error: error instanceof Error ? error : new Error(String(error)) }
+          }
+        },
+      }
+
+      for (const method of Object.keys(wrap)) {
+        if (!saved.has(method)) continue
+        Object.defineProperty(cmdNs, method, {
+          configurable: true,
+          enumerable: true,
+          get: () => wrap[method],
+        })
+      }
+
+      return () => {
+        for (const [method, desc] of saved) Object.defineProperty(cmdNs, method, desc)
+      }
+    }
+
+    /**
      * Intercept host file selection and drops for remote sessions:
      * When users click '+' -> 'File' (or drag & drop files from the host into
      * the composer), stock desktop logic uses hostPathBridge to turn non-image
@@ -4298,6 +4375,7 @@ window.__ModuleLoader__.load({
       ensureWorkspaceTreeMode(ctx)
       const restoreProxy = installSessionProxy(ctx)
       const restoreFileUpload = installFileUploadProxy(ctx)
+      const restoreCommands = installCommandsProxy(ctx)
       const restoreFileCommand = ensureFileCommandForRemoteSessions(ctx)
       const restoreAttachmentInterceptor = installRemoteAttachmentInterceptor(ctx)
       const restoreGuardian = installWorkspaceGuardian(ctx)
@@ -4348,6 +4426,7 @@ window.__ModuleLoader__.load({
         registerPendingPublisher = null
         restoreProxy()
         restoreFileUpload()
+        restoreCommands()
         restoreFileCommand()
         restoreAttachmentInterceptor()
         restoreGuardian()
@@ -4368,7 +4447,7 @@ window.__ModuleLoader__.load({
 
     exports.apply = apply
     exports.removeRemoteHost = removeRemoteHost
-    exports.inject = ['workspaces', 'sessions', 'remote', 'remote.session', 'remote.workspace', 'fileUpload']
+    exports.inject = ['workspaces', 'sessions', 'remote', 'remote.session', 'remote.workspace', 'fileUpload', 'remote.commands']
     return module.exports
   },
 })

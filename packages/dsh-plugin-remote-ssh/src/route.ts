@@ -64,6 +64,12 @@ export const SESSION_ATTACHMENT_ROUTE = '/remote-ssh/attachment'
 /** Absolute pathname for uploading a file into a remote session for prompt staging. */
 export const SESSION_FILE_UPLOAD_ROUTE = '/remote-ssh/file-upload'
 
+/** Absolute pathname for listing available commands in a remote session. */
+export const SESSION_COMMANDS_LIST_ROUTE = '/remote-ssh/commands-list'
+
+/** Absolute pathname for executing a command in a remote session. */
+export const SESSION_COMMANDS_EXECUTE_ROUTE = '/remote-ssh/commands-execute'
+
 /** Absolute pathname for querying unadded key-configured SSH hosts from ~/.ssh/config. */
 export const AVAILABLE_HOSTS_ROUTE = '/remote-ssh/available-hosts'
 
@@ -1595,5 +1601,59 @@ export function registerRemoteSshRoute(
         }
       },
     }), 'remote-ssh: session file-upload route')
+
+    scoped.effect(() => scoped.webServer.register({
+      kind: 'exact',
+      path: SESSION_COMMANDS_LIST_ROUTE,
+      handler: async (req, res) => {
+        try {
+          const body = await readJsonBody(req)
+          const rawSessionId = typeof body.sessionId === 'string' ? body.sessionId.trim() : undefined
+          if (!rawSessionId) {
+            sendJson(res, 400, { ok: false, error: { message: 'Field "sessionId" is required' } })
+            return
+          }
+          const target = resolveTarget(rawSessionId)
+          if (target.caller === undefined) {
+            sendJson(res, 200, { ok: true, value: [] })
+            return
+          }
+          const result = await target.caller.listRemoteCommands(target.originalSessionId)
+          sendJson(res, 200, { ok: true, value: result ?? [] })
+        } catch (_) {
+          // Gracefully fallback to empty list so '+' command menu never crashes
+          sendJson(res, 200, { ok: true, value: [] })
+        }
+      },
+    }), 'remote-ssh: session commands list route')
+
+    scoped.effect(() => scoped.webServer.register({
+      kind: 'exact',
+      path: SESSION_COMMANDS_EXECUTE_ROUTE,
+      handler: async (req, res) => {
+        try {
+          const body = await readJsonBody(req)
+          const rawSessionId = typeof body.sessionId === 'string' ? body.sessionId.trim() : undefined
+          const line = typeof body.line === 'string' ? body.line : undefined
+          const submittedAttachments = Array.isArray(body.submittedAttachments) ? body.submittedAttachments : []
+          if (!rawSessionId || line === undefined) {
+            sendJson(res, 400, { ok: false, error: { message: 'Fields "sessionId" and "line" are required' } })
+            return
+          }
+          const target = resolveTarget(rawSessionId)
+          if (target.caller === undefined) {
+            sendJson(res, 503, { ok: false, error: { message: 'tunnel-not-ready' } })
+            return
+          }
+          const result = await target.caller.executeRemoteCommand(target.originalSessionId, line, submittedAttachments)
+          sendJson(res, 200, { ok: true, value: result })
+        } catch (error) {
+          sendJson(res, 200, {
+            ok: false,
+            error: { message: error instanceof Error ? error.message : String(error) },
+          })
+        }
+      },
+    }), 'remote-ssh: session commands execute route')
   })
 }

@@ -906,6 +906,38 @@ export class RemoteCaller {
       readonly file: { readonly attachmentId: string; readonly name: string; readonly bytes: number }
     }>('fileUploads/upload', { agentId: sessionId, request }, signal)
   }
+
+  /**
+   * List available commands for an agent session from the remote host.
+   * @param sessionId - remote session identity.
+   * @param signal - optional caller cancellation.
+   */
+  async listRemoteCommands(
+    sessionId: string,
+    signal?: AbortSignal,
+  ): Promise<readonly unknown[]> {
+    return await this.invoke<readonly unknown[]>('commands/list', { agentId: sessionId }, signal)
+  }
+
+  /**
+   * Execute one slash-command in a remote session.
+   * @param sessionId - remote session identity.
+   * @param line - full command invocation line.
+   * @param submittedAttachments - optional attachments supplied with the command.
+   * @param signal - optional caller cancellation.
+   */
+  async executeRemoteCommand(
+    sessionId: string,
+    line: string,
+    submittedAttachments: readonly unknown[] = [],
+    signal?: AbortSignal,
+  ): Promise<unknown> {
+    return await this.invoke<unknown>(
+      'commands/execute',
+      { agentId: sessionId, line, submittedAttachments },
+      signal,
+    )
+  }
 }
 
 export interface RemoteInteractionQuestionOption {

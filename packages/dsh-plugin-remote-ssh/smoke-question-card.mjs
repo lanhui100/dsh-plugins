@@ -398,6 +398,14 @@ new Function(source)()
 
 const clientExports = registration.factory(() => undefined)
 
+class RemoteCommandsService extends Service {
+  constructor(ctx) {
+    super(ctx, 'remote.commands')
+    this.list = (...args) => Promise.resolve({ ok: true, value: [] })
+    this.execute = (...args) => Promise.resolve({ ok: true, value: { result: { kind: 'success' } } })
+  }
+}
+
 class RemoteService extends Service {
   static [Service.tracker] = { associate: 'remote' }
   constructor(ctx) {
@@ -456,6 +464,7 @@ class SessionsService extends Service {
 }
 
 const root = new Context()
+root.plugin(RemoteCommandsService)
 root.plugin(RemoteService)
 root.plugin(RemoteSessionService)
 root.plugin(RemoteWorkspaceService)

@@ -159,6 +159,14 @@ const clientExports = registration.factory((specifier) => {
   throw new Error(`unexpected external request: ${specifier}`)
 })
 
+class RemoteCommandsService extends Service {
+  constructor(ctx) {
+    super(ctx, 'remote.commands')
+    this.list = (...args) => Promise.resolve({ ok: true, value: [] })
+    this.execute = (...args) => Promise.resolve({ ok: true, value: { result: { kind: 'success' } } })
+  }
+}
+
 class RemoteService extends Service {
   static [Service.tracker] = { associate: 'remote' }
   constructor(ctx) {
@@ -265,6 +273,7 @@ class UiSessionService extends Service {
 }
 
 const root = new Context()
+root.plugin(RemoteCommandsService)
 root.plugin(RemoteService)
 root.plugin(RemoteSessionService)
 root.plugin(RemoteWorkspaceService)
@@ -451,6 +460,7 @@ class ReplaceOnlyWorkspacesService extends Service {
 }
 
 const root2 = new Context()
+root2.plugin(RemoteCommandsService)
 root2.plugin(RemoteService)
 root2.plugin(RemoteSessionService)
 root2.plugin(RemoteWorkspaceService)

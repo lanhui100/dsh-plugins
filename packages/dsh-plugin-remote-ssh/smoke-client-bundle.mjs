@@ -106,6 +106,20 @@ globalThis.fetch = async (url, opts) => {
       }),
     }
   }
+  if (urlStr.includes('/remote-ssh/commands-list')) {
+    return {
+      ok: true,
+      status: 200,
+      json: async () => ({ ok: true, value: [{ name: 'remote-cmd', description: 'A remote command' }] }),
+    }
+  }
+  if (urlStr.includes('/remote-ssh/commands-execute')) {
+    return {
+      ok: true,
+      status: 200,
+      json: async () => ({ ok: true, value: { result: { kind: 'success', text: 'done' } } }),
+    }
+  }
   if (urlStr.includes('/remote-ssh/cancel')) {
     return {
       ok: true,
@@ -314,6 +328,24 @@ class UiSessionService extends Service {
   }
 }
 
+class RemoteCommandsService extends Service {
+  constructor(ctx) {
+    super(ctx, 'remote.commands')
+    for (const method of ['list', 'execute']) {
+      Object.defineProperty(this, method, {
+        configurable: true,
+        enumerable: true,
+        get: () => (...args) => Promise.resolve({
+          ok: true,
+          value: method === 'list'
+            ? [{ name: 'local-help', description: 'Local help' }]
+            : { result: { kind: 'success', text: 'local' } },
+        }),
+      })
+    }
+  }
+}
+
 class RemoteService extends Service {
   static [Service.tracker] = { associate: 'remote' }
   constructor(ctx) {
@@ -321,6 +353,7 @@ class RemoteService extends Service {
     this.fileUploads = {
       upload: (...args) => ({ ok: true, value: { method: 'upload', args } }),
     }
+    this.commands = ctx.get('remote.commands')
   }
 }
 
@@ -429,6 +462,7 @@ class SessionsService extends Service {
 }
 
 const root = new Context()
+root.plugin(RemoteCommandsService)
 root.plugin(RemoteService)
 root.plugin(RemoteSessionService)
 root.plugin(RemoteWorkspaceService)
@@ -726,6 +760,23 @@ assert.ok(remoteNsUpload.ok, 'Direct remote.fileUploads upload must succeed')
 assert.equal(remoteNsUpload.value?.receiptId, 'rcpt-1', 'Remote fileUploads upload must return receiptId')
 const localRemoteNsUpload = await pluginCtx.remote.fileUploads.upload('session-local-x', { data: 'QUJD' })
 assert.equal(localRemoteNsUpload.value?.method, 'upload', 'Local remote.fileUploads upload must pass through')
+
+// Remote branch: commands list and execute forward to tunnel routes
+const remoteCmds = await pluginCtx.remote.commands.list('session-demo-1')
+assert.ok(remoteCmds.ok, 'Remote commands list must succeed')
+assert.equal(remoteCmds.value?.[0]?.name, 'remote-cmd', 'Remote commands list must return remote commands')
+assert.ok(requestedUrls.some((u) => u.includes('/remote-ssh/commands-list')), 'Commands list must hit /remote-ssh/commands-list')
+
+const remoteExec = await pluginCtx.remote.commands.execute('session-demo-1', '/remote-cmd')
+assert.ok(remoteExec.ok, 'Remote commands execute must succeed')
+assert.equal(remoteExec.value?.result?.text, 'done', 'Remote commands execute must return result')
+assert.ok(requestedUrls.some((u) => u.includes('/remote-ssh/commands-execute')), 'Commands execute must hit /remote-ssh/commands-execute')
+
+// Local branch: commands list and execute pass through
+const localCmds = await pluginCtx.remote.commands.list('session-local-x')
+assert.equal(localCmds.value?.[0]?.name, 'local-help', 'Local commands list must pass through')
+const localExec = await pluginCtx.remote.commands.execute('session-local-x', '/local-help')
+assert.equal(localExec.value?.result?.text, 'local', 'Local commands execute must pass through')
 
 // Remote attachment command interceptor:
 // Ensures '+' command menu's "file" command is always available on remote sessions

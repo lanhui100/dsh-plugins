@@ -63,6 +63,12 @@ export const SESSION_ATTACHMENT_ROUTE = '/remote-ssh/attachment'
 /** Host route for uploading a file into a remote session for prompt staging. */
 export const SESSION_FILE_UPLOAD_ROUTE = '/remote-ssh/file-upload'
 
+/** Host route for listing available commands in a remote session. */
+export const SESSION_COMMANDS_LIST_ROUTE = '/remote-ssh/commands-list'
+
+/** Host route for executing a command in a remote session. */
+export const SESSION_COMMANDS_EXECUTE_ROUTE = '/remote-ssh/commands-execute'
+
 
 /** Host route for querying remote workspaces/home directories. */
 export const REMOTE_WORKSPACES_ROUTE = '/remote-ssh/workspaces'
@@ -198,7 +204,7 @@ declare module '@deepseek-ai/cordis' {
  * Workspace and Session client models plus the Remote session and workspace
  * namespaces this half wraps.
  */
-export const inject = ['workspaces', 'sessions', 'remote', 'remote.session', 'remote.workspace', 'fileUpload']
+export const inject = ['workspaces', 'sessions', 'remote', 'remote.session', 'remote.workspace', 'fileUpload', 'remote.commands']
 
 /**
  * Activate the integration: publish the remote snapshot into the official
@@ -262,6 +268,17 @@ export function installSessionProxy(ctx: Context): () => void {
  * @returns disposer restoring the original upload implementations.
  */
 export function installFileUploadProxy(ctx: Context): () => void {
+  void ctx
+  return () => {}
+}
+
+/**
+ * Wrap `ctx.remote.commands` so remote session ids query commands from the
+ * tunnel route and execute remotely.
+ * @param ctx - client plugin context.
+ * @returns disposer restoring the original command implementations.
+ */
+export function installCommandsProxy(ctx: Context): () => void {
   void ctx
   return () => {}
 }
