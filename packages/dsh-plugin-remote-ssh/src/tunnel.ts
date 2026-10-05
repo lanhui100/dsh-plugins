@@ -26,10 +26,15 @@ export interface TunnelOptions {
   stderrMaxLines?: number
   /** Injectable RNG for deterministic backoff jitter in tests. */
   random?: () => number
+  /** Callback fired when tunnel becomes ready (initial start or reconnect). */
+  onReady?: () => void
+  /** Callback fired when tunnel disconnects/dies. */
+  onDown?: () => void
 }
 
 const DEFAULT_RECONNECT_DELAY_MS = 5_000
 const DEFAULT_RECONNECT_MAX_DELAY_MS = 60_000
+const MIN_RECONNECT_DELAY_MS = 1_000
 const READY_TIMEOUT_MS = 90_000
 const READY_POLL_MS = 1_000
 const DEFAULT_STDERR_MAX_LINES = 64
@@ -69,6 +74,7 @@ export class SshTunnel {
   private loop: Promise<void> | undefined
   private stderrLines: string[] = []
   private backoffTimer: ReturnType<typeof setTimeout> | undefined
+  private backoffResolve: (() => void) | undefined
 
   constructor(private readonly options: TunnelOptions) {}
 
@@ -113,6 +119,10 @@ export class SshTunnel {
       clearTimeout(this.backoffTimer)
       this.backoffTimer = undefined
     }
+    if (this.backoffResolve !== undefined) {
+      this.backoffResolve()
+      this.backoffResolve = undefined
+    }
     this.child?.kill()
     this.child = undefined
     if (this.loop !== undefined) {
@@ -133,6 +143,9 @@ export class SshTunnel {
           this.readyResolve = undefined
           this.readyReject = undefined
         }
+        try {
+          this.options.onReady?.()
+        } catch {}
         await this.watchChild()
       } catch (error) {
         if (this.closed) return
@@ -147,13 +160,18 @@ export class SshTunnel {
         this.failures += 1
       }
       if (this.closed) return
+      try {
+        this.options.onDown?.()
+      } catch {}
       const base = (this.options.reconnectDelayMs ?? DEFAULT_RECONNECT_DELAY_MS) * Math.pow(2, this.failures - 1)
       const cap = this.options.reconnectMaxDelayMs ?? DEFAULT_RECONNECT_MAX_DELAY_MS
       const jitter = this.options.random ?? Math.random
-      const delay = Math.min(cap, Math.floor(jitter() * base))
+      const delay = Math.min(cap, Math.max(MIN_RECONNECT_DELAY_MS, Math.floor(jitter() * base)))
       await new Promise<void>((resolve) => {
+        this.backoffResolve = resolve
         this.backoffTimer = setTimeout(() => {
           this.backoffTimer = undefined
+          this.backoffResolve = undefined
           resolve()
         }, delay)
       })

@@ -13,4 +13,16 @@ export interface Config {
   remotePort: number
   /** Local loopback port the tunnel forwards to. */
   localPort: number
+  /** Base delay between reconnect attempts after a loss (ms). Defaults to 5000. */
+  reconnectDelayMs?: number
+  /** Upper bound for the exponential reconnect delay (ms). Defaults to 60000. */
+  reconnectMaxDelayMs?: number
+  /** SSH ServerAliveInterval seconds (default 15). */
+  serverAliveInterval?: number
+  /** SSH ServerAliveCountMax (default 3). */
+  serverAliveCountMax?: number
+  /** SSH ConnectTimeout seconds (default 10). */
+  connectTimeout?: number
+  /** Pass -o TCPKeepAlive=yes when true. */
+  tcpKeepAlive?: boolean
 }

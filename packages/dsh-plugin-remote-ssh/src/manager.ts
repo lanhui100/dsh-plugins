@@ -6,8 +6,9 @@
 import { existsSync, readFileSync, writeFileSync, mkdirSync } from 'node:fs'
 import { join, dirname } from 'node:path'
 import { homedir } from 'node:os'
-import { SshTunnel } from './tunnel.ts'
-import { RemoteCaller } from './remote.ts'
+import { createServer } from 'node:net'
+import { SshTunnel, type TunnelOptions } from './tunnel.ts'
+import { RemoteCaller, type RemoteOptions } from './remote.ts'
 import { REMOTE_SOURCE_KIND } from './source.ts'
 import { RemoteLauncher } from './remote-launcher.ts'
 
@@ -15,6 +16,12 @@ export interface HostConfigItem {
   readonly host: string
   readonly remotePort: number
   readonly localPort: number
+  readonly reconnectDelayMs?: number
+  readonly reconnectMaxDelayMs?: number
+  readonly serverAliveInterval?: number
+  readonly serverAliveCountMax?: number
+  readonly connectTimeout?: number
+  readonly tcpKeepAlive?: boolean
 }
 
 export interface RemoteHostManagerOptions {
@@ -22,6 +29,12 @@ export interface RemoteHostManagerOptions {
   readonly primaryHost?: string
   readonly primaryRemotePort: number
   readonly primaryLocalPort: number
+  readonly reconnectDelayMs?: number
+  readonly reconnectMaxDelayMs?: number
+  readonly serverAliveInterval?: number
+  readonly serverAliveCountMax?: number
+  readonly connectTimeout?: number
+  readonly tcpKeepAlive?: boolean
   readonly storagePath?: string
   readonly launcher?: RemoteLauncher
   readonly onLoggerWarning?: (msg: string) => void
@@ -62,8 +75,10 @@ export class RemoteHostManager {
   private readonly startPromises = new Map<string, Promise<RemoteCaller>>()
   private readonly loggerWarn: (msg: string) => void
   private readonly loggerInfo: (msg: string) => void
+  private readonly options: RemoteHostManagerOptions
 
   constructor(options: RemoteHostManagerOptions) {
+    this.options = options
     this.storagePath = options.storagePath || resolveDefaultHostsStoragePath()
     this.launcher = options.launcher ?? new RemoteLauncher()
     this.loggerWarn = options.onLoggerWarning || console.warn
@@ -78,6 +93,12 @@ export class RemoteHostManager {
           host: options.primaryHost,
           remotePort: options.primaryRemotePort,
           localPort: options.primaryLocalPort,
+          reconnectDelayMs: options.reconnectDelayMs,
+          reconnectMaxDelayMs: options.reconnectMaxDelayMs,
+          serverAliveInterval: options.serverAliveInterval,
+          serverAliveCountMax: options.serverAliveCountMax,
+          connectTimeout: options.connectTimeout,
+          tcpKeepAlive: options.tcpKeepAlive,
         },
         isReady: false,
         isStarting: false,
@@ -207,6 +228,26 @@ export class RemoteHostManager {
   }
 
 
+  /** Check if a local port is currently available by attempting to bind to it. */
+  async isPortAvailable(port: number): Promise<boolean> {
+    return new Promise((resolve) => {
+      const server = createServer()
+      server.once('error', () => {
+        resolve(false)
+      })
+      server.once('listening', () => {
+        server.close(() => {
+          resolve(true)
+        })
+      })
+      server.listen(port, '127.0.0.1')
+    })
+  }
+
+  /**
+   * Allocate next local port (synchronous calculation based on registered entries).
+   * Preserves backward compatibility with existing tests and callers.
+   */
   allocateLocalPort(): number {
     let maxPort = 39386
     for (const entry of this.entries.values()) {
@@ -215,6 +256,20 @@ export class RemoteHostManager {
       }
     }
     return maxPort + 1
+  }
+
+  /**
+   * Find next free local port by scanning from allocateLocalPort()
+   * and validating availability against the operating system.
+   */
+  async findAvailableLocalPort(): Promise<number> {
+    let candidate = this.allocateLocalPort()
+    for (let attempts = 0; attempts < 50; attempts++) {
+      const free = await this.isPortAvailable(candidate)
+      if (free) return candidate
+      candidate += 1
+    }
+    return candidate
   }
 
   /**
@@ -265,6 +320,13 @@ export class RemoteHostManager {
   private async doStartHost(entry: ActiveHostEntry): Promise<RemoteCaller> {
     const { config } = entry
 
+    // If an existing tunnel is already running or reconnecting in background,
+    // dispose it before spawning a fresh one to avoid port collision.
+    if (entry.tunnel) {
+      await entry.tunnel.dispose().catch(() => {})
+      entry.tunnel = undefined
+    }
+
     // The remote DSH process is a prerequisite, not something this plugin owns.
     // Probe it before opening a tunnel and fail closed when it is unavailable.
     try {
@@ -281,15 +343,41 @@ export class RemoteHostManager {
       throw probeErr instanceof Error ? probeErr : new Error(String(probeErr))
     }
 
+    // Verify port availability
+    const portFree = await this.isPortAvailable(config.localPort)
+    if (!portFree) {
+      throw new Error(`本地端口 127.0.0.1:${String(config.localPort)} 已被其它进程占用，无法为主机 "${config.host}" 建立 SSH 隧道。`)
+    }
+
+    let callerRef: RemoteCaller | undefined
+
     const tunnel = new SshTunnel({
       host: config.host,
       remotePort: config.remotePort,
       localPort: config.localPort,
+      reconnectDelayMs: config.reconnectDelayMs,
+      reconnectMaxDelayMs: config.reconnectMaxDelayMs,
+      serverAliveInterval: config.serverAliveInterval,
+      serverAliveCountMax: config.serverAliveCountMax,
+      connectTimeout: config.connectTimeout,
+      tcpKeepAlive: config.tcpKeepAlive,
+      onReady: () => {
+        entry.isReady = true
+        callerRef?.onTunnelReady()
+      },
+      onDown: () => {
+        entry.isReady = false
+        callerRef?.onTunnelDown()
+      },
     })
     const caller = new RemoteCaller({
       host: config.host,
       baseUrl: tunnel.baseUrl(),
+      isTunnelReady: () => entry.isReady,
+      eventsReconnectBaseMs: 2_000,
+      eventsReconnectMaxDelayMs: 30_000,
     })
+    callerRef = caller
 
     entry.tunnel = tunnel
     entry.caller = caller
@@ -344,11 +432,17 @@ export class RemoteHostManager {
       }
     }
 
-    const localPort = this.allocateLocalPort()
+    const localPort = await this.findAvailableLocalPort()
     const config: HostConfigItem = {
       host: trimmed,
       remotePort,
       localPort,
+      reconnectDelayMs: this.options.reconnectDelayMs,
+      reconnectMaxDelayMs: this.options.reconnectMaxDelayMs,
+      serverAliveInterval: this.options.serverAliveInterval,
+      serverAliveCountMax: this.options.serverAliveCountMax,
+      connectTimeout: this.options.connectTimeout,
+      tcpKeepAlive: this.options.tcpKeepAlive,
     }
 
     // Register in memory first without persisting: only a successful connect

@@ -84,6 +84,12 @@ export function apply(ctx: Context, config: Config): void {
     primaryHost: config.host,
     primaryRemotePort: config.remotePort,
     primaryLocalPort: config.localPort,
+    reconnectDelayMs: config.reconnectDelayMs,
+    reconnectMaxDelayMs: config.reconnectMaxDelayMs,
+    serverAliveInterval: config.serverAliveInterval,
+    serverAliveCountMax: config.serverAliveCountMax,
+    connectTimeout: config.connectTimeout,
+    tcpKeepAlive: config.tcpKeepAlive,
     onLoggerWarning: (msg) => ctx.logger?.warn?.(msg),
     onLoggerInfo: (msg) => ctx.logger?.info?.(msg),
   })

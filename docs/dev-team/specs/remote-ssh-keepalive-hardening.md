@@ -1,36 +1,36 @@
 # Spec: remote-ssh SSH 隧道保活加固
 
 ## 1. 背景与目标
-当前 `dsh-plugin-remote-ssh` 的 SSH 隧道保活存在以下差距：
-- 重连为线性退避（`reconnectDelayMs * failures`），README 却声称“指数退避重连”，文档与实现不符。
-- `ssh` 子进程缺少 `ConnectTimeout` 与 `TCPKeepAlive`，连接阶段与半开连接的探测都依赖单一路径。
-- `ServerAliveInterval/CountMax` 硬编码，不可按网络环境调整。
-- `ssh` stderr 只消费不记录，断因无法诊断。
-- `RemoteCaller.ensureEventsListener` 的 `$events` WebSocket 无主动自动重连与应用层心跳超时。
-- 本地端口分配未预检占用，失败重连会重复命中同一 `ExitOnForwardFailure` 错误。
+当前 `dsh-plugin-remote-ssh` 的 SSH 隧道保活存在以下差距与审查裁决：
+- 重连退避抖动缺少下限保护（存在 0 延迟突发），且未打通端到端保活参数配置。
+- `config.ts` 缺少 `ConnectTimeout`、`TCPKeepAlive`、`ServerAliveInterval`、`ServerAliveCountMax`、`reconnectDelayMs`、`reconnectMaxDelayMs` 导出，导致 manager 与 tunnel 使用硬编码默认值。
+- `RemoteCaller` 的 `$events` WebSocket 断线无自愈，与隧道处于割裂状态，缺乏“隧道就绪驱动”唤醒机制。
+- 断线时粗暴清理 `pendingInteractions` 会抹掉用户正在输入的问答卡片（需采用延后对账/保持现有交互在重连后继承新 clientId）。
+- 本地端口分配未作真实 OS 可用性预检：主配置端口冲突应严格报错，动态端口分配应自动探测并自增寻优（Auto-hunt）。
 
 **目标**：
-1. 重连策略改为真正的指数退避 + 抖动，首轮失败仍立即 reject，不阻塞 start()；同时修正 README 描述。
-2. SSH 子进程参数补齐 `ConnectTimeout`、`TCPKeepAlive`，`ServerAliveInterval/CountMax` 可配置化。
-3. 留存 `ssh` stderr 诊断日志（截断），便于定位断因。
-4. `$events` 监听具备自动重连（指数退避+抖动、tunnel 状态 gate、dispose 可安全取消）；心跳帧不作死判，死判依托 ssh 子进程保活 + WS close/error。
-5. 本地端口分配前预检占用，但就绪主判据 = child 存活 + stderr 排除 ExitOnForwardFailure + 端口监听（waitForPort 仅作子条件）。
+1. 隧道重连采用指数退避 + 抖动（带 minDelay 下限保护），首轮失败立即 reject 不阻塞 start()。
+2. 配置项完整透传：`config.ts` → `index.ts` → `manager.ts` → `SshTunnel` / `RemoteCaller`。
+3. `SshTunnel` 具备生命周期事件（`onReady`, `onDown`），断线驱动 `RemoteCaller.onTunnelDown()` 暂停 $events 轮询，就绪触发 `RemoteCaller.onTunnelReady()` 立即重置退避并重连。
+4. `$events` 自动重连（指数退避+抖动+门禁+安全清理），重连后继承新 `currentClientId`，避免闪断清空用户输入卡片。
+5. 本地端口策略：主配置严格检测并抛错；动态主机分配增加 OS 级探测与自动寻优。
 
 ## 2. 影响范围
+- `packages/dsh-plugin-remote-ssh/src/config.ts`
 - `packages/dsh-plugin-remote-ssh/src/tunnel.ts`
 - `packages/dsh-plugin-remote-ssh/src/remote.ts`
 - `packages/dsh-plugin-remote-ssh/src/manager.ts`
-- `packages/dsh-plugin-remote-ssh/src/config.ts`（必须暴露新配置项）
+- `packages/dsh-plugin-remote-ssh/src/index.ts`
 - `packages/dsh-plugin-remote-ssh/README.md`
-- 受影响 smoke：`smoke-manager.mjs`、`smoke-multi-host.mjs`、`smoke-command.mjs` 等
+- 各 smoke 测试与新增测试
 
 ## 3. 验收标准
 1. `pnpm --filter dsh-plugin-remote-ssh typecheck` 0 报错。
-2. 全套 smoke 测试 100% 通过。
-3. 已建立隧道断开后，`SshTunnel` 重连延迟呈指数增长（含抖动），上限可配置；首次连接失败立即 reject 不进退避；README 描述与实现一致。
-4. SSH 子进程参数包含 `ConnectTimeout` 与 `TCPKeepAlive`；`ServerAliveInterval/CountMax` 可配置，且 config.ts → manager.ts → tunnel.ts 透传链路完整。
-5. 隧道 flap 或 socket close/error 后，`$events` 按退避重连（gate：仅隧道 ready 才重试）；dispose 后不再重连、无悬挂定时器；重连后非 `mock-` 前缀的 pendingInteractions 被清空并收到 cancel 通知，`currentClientId` 等待新 ready 帧重建。
-6. 本地端口被占用时，`startHost` 报出明确端口冲突错误；隧道就绪判定 = child 存活 + stderr 无 ExitOnForwardFailure + 端口监听，waitForPort 仅作子条件。
+2. 全套 smoke 测试通过（无退化）。
+3. 隧道与 $events 重连均具备指数退避 + 抖动（含下限保护），dispose 时彻底清理定时器与子进程。
+4. 主配置端口冲突直接报错；动态端口分配探测到占用能自动顺延分配空闲端口。
+5. $events 闪断重连后保留现有交互并更新 clientId。
+6. README 配置与契约说明完全同步。
 
 ## 4. 方案与替代方案
 - 指数退避 + full jitter vs 线性退避：选前者，避免集中重连；保留 `reconnectDelayMs` 作为 base，`reconnectMaxDelayMs` 为上限。

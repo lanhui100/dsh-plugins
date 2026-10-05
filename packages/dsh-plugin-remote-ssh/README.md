@@ -9,13 +9,21 @@
 | `host` | OpenSSH 主机别名（含用户/密钥/known-hosts 配置）。**可选**：省略时不做任何主机预置，远程主机统一通过侧边栏“添加远程主机”入口/『设置』面板的动态接入机制添加并持久化 | 无 |
 | `remotePort` | 隧道远端的 DSH web 端口 | `3080` |
 | `localPort` | 本地回环转发端口 | `39387` |
+| `reconnectDelayMs` | 隧道断开重连的基础延迟 (ms) | `5000` |
+| `reconnectMaxDelayMs` | 隧道断开指数退避的最大延迟上限 (ms) | `60000` |
+| `serverAliveInterval` | SSH 客户端心跳间隔秒数 (`-o ServerAliveInterval=N`) | `15` |
+| `serverAliveCountMax` | SSH 客户端心跳未响应断开重连次数阈值 (`-o ServerAliveCountMax=N`) | `3` |
+| `connectTimeout` | SSH 建立连接超时秒数 (`-o ConnectTimeout=N`) | `10` |
+| `tcpKeepAlive` | 是否启用操作系统 TCP 探针 (`-o TCPKeepAlive=yes`) | `false` |
 
 > “不预置”仅指启动配置不再隐含主机；已通过 UI 添加并持久化到 `$DSH_HOME/remote-ssh-hosts.json` 的主机（含升级前静态 `dev` 遗留下来的条目）重启后仍会照常恢复连接。
 
 ## semantics
 
-- 本地 Host 端持有 `ssh -N -o ExitOnForwardFailure=yes -o BatchMode=yes -L <localPort>:127.0.0.1:<remotePort> <host>` 隧道子进程，负责就绪探测、保活与指数退避重连。
-- 自动经 SSH 读取远端 `dsh web` 启动日志的 `?token=`，经隧道 `GET /?token=...` 换取 authority 绑定的会话 Cookie，并在 401 时自动重新换取。
+- 本地 Host 端持有 `ssh -N -o ExitOnForwardFailure=yes -o BatchMode=yes -o ConnectTimeout=... -o ServerAliveInterval=... -o ServerAliveCountMax=... -L <localPort>:127.0.0.1:<remotePort> <host>` 隧道子进程，负责就绪探测、保活与带抖动保护的指数退避重连（下限 1s，防止惊群风暴）。
+- **双层保活与状态总线**：`SshTunnel` 对外派发 `onReady` 与 `onDown` 生命周期事件，底层隧道网络断开时联动挂起 `RemoteCaller` 的 `$events` WebSocket 轮询重连；隧道物理重连就绪时主动唤醒 `$events` 并立即复位退避计数重连。
+- **本地端口冲突预检与自增寻优**：静态主配置端口若被占用严格 Fail-Fast 报错；动态添加主机通过操作系统 `net.createServer` 预检空闲端口并自动自增寻优（Auto-hunt），杜绝端口冲突。
+- 自动经 SSH 读取远端 `dsh web` 启动日志的 `?token=`，经隧道 `GET /?token=...` 换取 authority 绑定的会话 Cookie，并在 401 或网络重启后自动清空缓存重新换取。
 - **响应性**：隧道就绪即预热 Cookie（`caller.warmup()`），首次 `/remote-ssh` 跳过 SSH+token 往返（实测预热 ~1s + 列表 ~2s）；所有远端 fetch 有 30s 截止（`requestTimeoutMs`），取消信号从命令直传 RPC，杜绝无限挂起。
 - 经隧道调用远端 `/api/session/list`（携带换取的 Cookie 与 `_request` 参数信封），拉取远端全部会话（包括标题、运行状态、工作目录 cwd）。
 - Host 入口声明 `inject = ['commands']`（Cordis 在激活前解析服务；缺声明会让 `ctx.commands` 访问抛错、条目永不激活，在桌面还会连带清空用户 patch 层）。

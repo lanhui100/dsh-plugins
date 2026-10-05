@@ -96,6 +96,10 @@ export class RemoteCaller {
   private currentClientId?: string
   private readonly pendingInteractions = new Map<string, RemotePendingInteraction>()
   private readonly interactionListeners = new Set<(interaction: RemotePendingInteraction, action: 'request' | 'cancel') => void>()
+  private eventsDisposed = false
+  private eventsFailures = 0
+  private eventsReconnectTimer?: ReturnType<typeof setTimeout>
+  private tunnelPaused = false
 
   constructor(private readonly options: RemoteOptions) {}
 
@@ -497,23 +501,93 @@ export class RemoteCaller {
    * Discovers and maintains `currentClientId`, and captures incoming `waterfall` events
    * like `user-questions/request` and `cancel`.
    */
+  /**
+   * Called when underlying SSH tunnel becomes ready.
+   * Immediately resets $events backoff and triggers reconnect.
+   */
+  onTunnelReady(): void {
+    this.tunnelPaused = false
+    this.eventsFailures = 0
+    if (this.eventsReconnectTimer !== undefined) {
+      clearTimeout(this.eventsReconnectTimer)
+      this.eventsReconnectTimer = undefined
+    }
+    if (!this.eventsDisposed) {
+      void this.ensureEventsListener().catch(() => {})
+    }
+  }
+
+  /**
+   * Called when underlying SSH tunnel goes down.
+   * Pauses $events reconnect loop to avoid wasteful probe storm.
+   */
+  onTunnelDown(): void {
+    this.tunnelPaused = true
+    this.eventsConnecting = undefined
+    if (this.eventsReconnectTimer !== undefined) {
+      clearTimeout(this.eventsReconnectTimer)
+      this.eventsReconnectTimer = undefined
+    }
+    if (this.eventsSocket) {
+      try { this.eventsSocket.close() } catch {}
+      this.eventsSocket = undefined
+    }
+    // Clear cookie cache so next connect re-exchanges token in case remote restarted
+    this.jar.clear()
+  }
+
+  private eventsConnecting?: Promise<void>
+
   async ensureEventsListener(): Promise<void> {
+    if (this.eventsDisposed) return
+    if (this.tunnelPaused) return
+    if (this.options.isTunnelReady && !this.options.isTunnelReady()) return
+
+    if (this.eventsConnecting) {
+      return this.eventsConnecting
+    }
+
+    this.eventsConnecting = this.doEnsureEventsListener().finally(() => {
+      this.eventsConnecting = undefined
+    })
+    return this.eventsConnecting
+  }
+
+  private async doEnsureEventsListener(): Promise<void> {
+    if (this.eventsDisposed || this.tunnelPaused) return
+    if (this.options.isTunnelReady && !this.options.isTunnelReady()) return
+
     const WS = (globalThis as unknown as { WebSocket: typeof WebSocket }).WebSocket
     if (typeof WS !== 'function') return
     if (this.eventsSocket && (this.eventsSocket.readyState === 0 || this.eventsSocket.readyState === 1)) {
       return
     }
-    await this.ensureCookie()
+
+    try {
+      await this.ensureCookie()
+    } catch {
+      this.scheduleEventsReconnect()
+      return
+    }
+    if (this.eventsDisposed || this.tunnelPaused) return
+
     const cookie = this.jar.header()
     const wsUrl = `${this.options.baseUrl.replace(/^http/, 'ws')}/api/remote.mux`
 
     const streamId = `events-${Date.now().toString(36)}-${Math.floor(Math.random() * 0xffff).toString(16)}`
-    const socket = new WS(wsUrl, {
-      headers: cookie !== undefined ? { cookie } : {},
-    } as unknown as string[])
+    let socket: WebSocket
+    try {
+      socket = new WS(wsUrl, {
+        headers: cookie !== undefined ? { cookie } : {},
+      } as unknown as string[])
+    } catch {
+      this.scheduleEventsReconnect()
+      return
+    }
     this.eventsSocket = socket
 
     socket.onopen = () => {
+      this.eventsFailures = 0
       try {
         socket.send(JSON.stringify({
           type: 'open',
@@ -540,6 +614,12 @@ export class RemoteCaller {
           const val = msg.value
           if (val?.type === 'ready') {
             this.currentClientId = val.clientId
+            // Re-bind existing non-mock pending interactions with the new clientId
+            for (const [eventId, item] of this.pendingInteractions.entries()) {
+              if (!item.clientId.startsWith('mock-')) {
+                this.pendingInteractions.set(eventId, { ...item, clientId: val.clientId })
+              }
+            }
           } else if (val?.type === 'waterfall' && val.event === 'user-questions/request') {
             const rawReq = val.request || {}
             const questions: RemoteInteractionQuestionItem[] = Array.isArray(rawReq.questions)
@@ -578,11 +658,30 @@ export class RemoteCaller {
       if (this.eventsSocket === socket) {
         this.eventsSocket = undefined
       }
+      this.scheduleEventsReconnect()
     }
 
     socket.onerror = () => {
       try { socket.close() } catch {}
     }
+  }
+
+  private scheduleEventsReconnect(): void {
+    if (this.eventsDisposed || this.tunnelPaused) return
+    if (this.options.isTunnelReady && !this.options.isTunnelReady()) return
+    if (this.eventsReconnectTimer !== undefined) return
+
+    this.eventsFailures += 1
+    const base = (this.options.eventsReconnectBaseMs ?? 2_000) * Math.pow(2, this.eventsFailures - 1)
+    const cap = this.options.eventsReconnectMaxDelayMs ?? 30_000
+    const minDelay = 1_000
+    const jitter = this.options.random ?? Math.random
+    const delay = Math.min(cap, Math.max(minDelay, Math.floor(jitter() * base)))
+
+    this.eventsReconnectTimer = setTimeout(() => {
+      this.eventsReconnectTimer = undefined
+      void this.ensureEventsListener().catch(() => {})
+    }, delay)
   }
 
   getPendingInteractionsForSession(sessionId: string): RemotePendingInteraction[] {
@@ -633,24 +732,34 @@ export class RemoteCaller {
   ): Promise<unknown> {
     const effectiveClientId = clientId || this.pendingInteractions.get(eventId)?.clientId || this.currentClientId || ''
     let result: unknown = { accepted: true }
-    if (!effectiveClientId.startsWith('mock-')) {
-      result = await this.invoke<unknown>('$events/result', {
-        clientId: effectiveClientId,
-        eventId,
-        outcome,
-      })
-    }
-    const pending = this.pendingInteractions.get(eventId)
-    if (pending) {
-      this.pendingInteractions.delete(eventId)
-      for (const listener of this.interactionListeners) {
-        try { listener(pending, 'cancel') } catch {}
+    try {
+      if (!effectiveClientId.startsWith('mock-')) {
+        result = await this.invoke<unknown>('$events/result', {
+          clientId: effectiveClientId,
+          eventId,
+          outcome,
+        })
+      }
+      return result
+    } finally {
+      // Regardless of success or failure (e.g. 400 not-found when stale),
+      // dismiss the pending interaction so it does not become a ghost card.
+      const pending = this.pendingInteractions.get(eventId)
+      if (pending) {
+        this.pendingInteractions.delete(eventId)
+        for (const listener of this.interactionListeners) {
+          try { listener(pending, 'cancel') } catch {}
+        }
       }
     }
-    return result
   }
 
   dispose(): void {
+    this.eventsDisposed = true
+    if (this.eventsReconnectTimer !== undefined) {
+      clearTimeout(this.eventsReconnectTimer)
+      this.eventsReconnectTimer = undefined
+    }
     if (this.eventsSocket) {
       try { this.eventsSocket.close() } catch {}
       this.eventsSocket = undefined
