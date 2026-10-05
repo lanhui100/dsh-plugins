@@ -86,6 +86,26 @@ globalThis.fetch = async (url, opts) => {
       json: async () => ({ ok: true, value: { accepted: true } }),
     }
   }
+  if (urlStr.includes('/remote-ssh/attachment')) {
+    return {
+      ok: true,
+      status: 200,
+      json: async () => ({
+        ok: true,
+        value: { attachment: { attachmentId: 'att-1', mediaType: 'image/png' }, data: 'QUJD' },
+      }),
+    }
+  }
+  if (urlStr.includes('/remote-ssh/file-upload')) {
+    return {
+      ok: true,
+      status: 200,
+      json: async () => ({
+        ok: true,
+        value: { receiptId: 'rcpt-1', file: { attachmentId: 'att-f1', name: 'notes.txt', bytes: 3 } },
+      }),
+    }
+  }
   if (urlStr.includes('/remote-ssh/cancel')) {
     return {
       ok: true,
@@ -298,6 +318,18 @@ class RemoteService extends Service {
   static [Service.tracker] = { associate: 'remote' }
   constructor(ctx) {
     super(ctx, 'remote')
+    this.fileUploads = {
+      upload: (...args) => ({ ok: true, value: { method: 'upload', args } }),
+    }
+  }
+}
+
+class FileUploadService extends Service {
+  constructor(ctx) {
+    super(ctx, 'fileUpload')
+  }
+  upload(...args) {
+    return Promise.resolve({ ok: true, value: { method: 'upload', args } })
   }
 }
 
@@ -388,6 +420,7 @@ root.plugin(RemoteWorkspaceService)
 root.plugin(WorkspacesService)
 root.plugin(SessionsService)
 root.plugin(UiSessionService)
+root.plugin(FileUploadService)
 
 const fork = root.plugin({
   name: registration.id,
@@ -652,6 +685,31 @@ const localSelectModel = await pluginCtx.remote.session.selectModel({
   model: 'deepseek-chat',
 })
 assert.equal(localSelectModel.value?.method, 'selectModel', 'Local selectModel must pass through')
+
+// Session actions: attachment read forwards to /remote-ssh/attachment
+const attachmentRes = await pluginCtx.remote.session.attachment({ sessionId: 'session-demo-1', attachmentId: 'att-1' })
+assert.ok(attachmentRes.ok, 'Remote attachment read must succeed')
+assert.equal(attachmentRes.value?.attachment?.attachmentId, 'att-1', 'Remote attachment must return durable ref')
+assert.ok(requestedUrls.some((u) => u.includes('/remote-ssh/attachment')), 'Attachment must hit /remote-ssh/attachment')
+
+// File upload forwards to /remote-ssh/file-upload
+const uploadRes = await pluginCtx.fileUpload.upload('session-demo-1', new Uint8Array([1, 2, 3]), 'notes.txt')
+assert.ok(uploadRes.ok, 'Remote file upload must succeed')
+assert.equal(uploadRes.value?.receiptId, 'rcpt-1', 'Remote upload must return receiptId')
+assert.ok(requestedUrls.some((u) => u.includes('/remote-ssh/file-upload')), 'Upload must hit /remote-ssh/file-upload')
+
+// Local branch: attachment and upload pass through
+const localAttachment = await pluginCtx.remote.session.attachment({ sessionId: 'session-local-x', attachmentId: 'att-x' })
+assert.equal(localAttachment.value?.method, 'attachment', 'Local attachment must pass through')
+const localUpload = await pluginCtx.fileUpload.upload('session-local-x', new Uint8Array([1]), 'a.txt')
+assert.equal(localUpload.value?.method, 'upload', 'Local file upload must pass through')
+
+// Direct ctx.remote.fileUploads.upload wraps the same tunnel route
+const remoteNsUpload = await pluginCtx.remote.fileUploads.upload('session-demo-1', { data: 'QUJD', name: 'a.txt' })
+assert.ok(remoteNsUpload.ok, 'Direct remote.fileUploads upload must succeed')
+assert.equal(remoteNsUpload.value?.receiptId, 'rcpt-1', 'Remote fileUploads upload must return receiptId')
+const localRemoteNsUpload = await pluginCtx.remote.fileUploads.upload('session-local-x', { data: 'QUJD' })
+assert.equal(localRemoteNsUpload.value?.method, 'upload', 'Local remote.fileUploads upload must pass through')
 
 // Workspace actions: archiveSession & unarchiveSession
 // Remote branch: archiveSession forwards to /remote-ssh/session-archive and updates wsList

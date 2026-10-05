@@ -57,6 +57,12 @@ export const SESSION_RENAME_ROUTE = '/remote-ssh/session-rename'
 /** Host route for selecting model of a remote session. */
 export const SESSION_SELECT_MODEL_ROUTE = '/remote-ssh/session-select-model'
 
+/** Host route for reading a remote session image attachment. */
+export const SESSION_ATTACHMENT_ROUTE = '/remote-ssh/attachment'
+
+/** Host route for uploading a file into a remote session for prompt staging. */
+export const SESSION_FILE_UPLOAD_ROUTE = '/remote-ssh/file-upload'
+
 
 /** Host route for querying remote workspaces/home directories. */
 export const REMOTE_WORKSPACES_ROUTE = '/remote-ssh/workspaces'
@@ -192,7 +198,7 @@ declare module '@deepseek-ai/cordis' {
  * Workspace and Session client models plus the Remote session and workspace
  * namespaces this half wraps.
  */
-export const inject = ['workspaces', 'sessions', 'remote', 'remote.session', 'remote.workspace']
+export const inject = ['workspaces', 'sessions', 'remote', 'remote.session', 'remote.workspace', 'fileUpload']
 
 /**
  * Activate the integration: publish the remote snapshot into the official
@@ -245,6 +251,17 @@ export function reconcileRemoteSource(ctx: Context): Promise<void> {
  * @returns disposer restoring the original method getters.
  */
 export function installSessionProxy(ctx: Context): () => void {
+  void ctx
+  return () => {}
+}
+
+/**
+ * Wrap `ctx.fileUpload.upload` / `ctx.remote.fileUploads.upload` so remote
+ * session ids upload through the tunnel instead of the local HTTP route.
+ * @param ctx - client plugin context.
+ * @returns disposer restoring the original upload implementations.
+ */
+export function installFileUploadProxy(ctx: Context): () => void {
   void ctx
   return () => {}
 }

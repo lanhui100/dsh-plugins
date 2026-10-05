@@ -58,6 +58,12 @@ export const SESSION_RENAME_ROUTE = '/remote-ssh/session-rename'
 /** Absolute pathname for selecting model of a remote session. */
 export const SESSION_SELECT_MODEL_ROUTE = '/remote-ssh/session-select-model'
 
+/** Absolute pathname for reading a remote session image attachment. */
+export const SESSION_ATTACHMENT_ROUTE = '/remote-ssh/attachment'
+
+/** Absolute pathname for uploading a file into a remote session for prompt staging. */
+export const SESSION_FILE_UPLOAD_ROUTE = '/remote-ssh/file-upload'
+
 /** Absolute pathname for querying unadded key-configured SSH hosts from ~/.ssh/config. */
 export const AVAILABLE_HOSTS_ROUTE = '/remote-ssh/available-hosts'
 
@@ -1529,5 +1535,65 @@ export function registerRemoteSshRoute(
         }
       },
     }), 'remote-ssh: session select-model route')
+
+    scoped.effect(() => scoped.webServer.register({
+      kind: 'exact',
+      path: SESSION_ATTACHMENT_ROUTE,
+      handler: async (req, res) => {
+        try {
+          const body = await readJsonBody(req)
+          const rawSessionId = typeof body.sessionId === 'string' ? body.sessionId.trim() : undefined
+          const attachmentId = typeof body.attachmentId === 'string' ? body.attachmentId.trim() : undefined
+          if (!rawSessionId || !attachmentId) {
+            sendJson(res, 400, { ok: false, error: { message: 'Fields "sessionId" and "attachmentId" are required' } })
+            return
+          }
+          const target = resolveTarget(rawSessionId)
+          if (target.caller === undefined) {
+            sendJson(res, 503, { ok: false, error: { message: 'tunnel-not-ready' } })
+            return
+          }
+          const result = await target.caller.readRemoteAttachment(target.originalSessionId, attachmentId)
+          sendJson(res, 200, { ok: true, value: result })
+        } catch (error) {
+          sendJson(res, 200, {
+            ok: false,
+            error: { message: error instanceof Error ? error.message : String(error) },
+          })
+        }
+      },
+    }), 'remote-ssh: session attachment route')
+
+    scoped.effect(() => scoped.webServer.register({
+      kind: 'exact',
+      path: SESSION_FILE_UPLOAD_ROUTE,
+      handler: async (req, res) => {
+        try {
+          const body = await readJsonBody(req)
+          const rawSessionId = typeof body.sessionId === 'string' ? body.sessionId.trim() : undefined
+          const data = typeof body.data === 'string' ? body.data : undefined
+          const name = typeof body.name === 'string' && body.name !== '' ? body.name : undefined
+          if (!rawSessionId || data === undefined) {
+            sendJson(res, 400, { ok: false, error: { message: 'Fields "sessionId" and "data" are required' } })
+            return
+          }
+          const target = resolveTarget(rawSessionId)
+          if (target.caller === undefined) {
+            sendJson(res, 503, { ok: false, error: { message: 'tunnel-not-ready' } })
+            return
+          }
+          const result = await target.caller.uploadRemoteFile(target.originalSessionId, {
+            data,
+            ...(name !== undefined ? { name } : {}),
+          })
+          sendJson(res, 200, { ok: true, value: result })
+        } catch (error) {
+          sendJson(res, 200, {
+            ok: false,
+            error: { message: error instanceof Error ? error.message : String(error) },
+          })
+        }
+      },
+    }), 'remote-ssh: session file-upload route')
   })
 }

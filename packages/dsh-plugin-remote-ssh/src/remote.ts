@@ -11,6 +11,14 @@ export interface RemoteOptions {
   logPath?: string
   /** Deadline for one RPC/token-exchange attempt (ms). Defaults to 30 s. */
   requestTimeoutMs?: number
+  /** Gate: only (re)open the $events socket while the tunnel is alive. */
+  isTunnelReady?: () => boolean
+  /** Base delay for $events reconnect backoff (ms). Defaults to 2000. */
+  eventsReconnectBaseMs?: number
+  /** Cap for $events reconnect delay (ms). Defaults to 30000. */
+  eventsReconnectMaxDelayMs?: number
+  /** Injectable RNG for deterministic reconnect jitter in tests. */
+  random?: () => number
 }
 
 const DEFAULT_LOG_PATH = '/tmp/dsh-web.log'
@@ -748,6 +756,46 @@ export class RemoteCaller {
       },
       signal,
     )
+  }
+
+  /**
+   * Read one durable image attachment referenced by a remote session.
+   * @param sessionId - remote session identity.
+   * @param attachmentId - opaque attachment id found in the session log.
+   * @param signal - optional caller cancellation.
+   */
+  async readRemoteAttachment(
+    sessionId: string,
+    attachmentId: string,
+    signal?: AbortSignal,
+  ): Promise<{
+    readonly attachment: { readonly attachmentId: string; readonly mediaType: string; readonly name?: string }
+    readonly data: string
+  }> {
+    return await this.invoke<{
+      readonly attachment: { readonly attachmentId: string; readonly mediaType: string; readonly name?: string }
+      readonly data: string
+    }>('session/attachment', { request: { sessionId, attachmentId } }, signal)
+  }
+
+  /**
+   * Upload one base64-encoded file into a remote session for prompt staging.
+   * @param sessionId - remote session identity (Agent scope on the wire).
+   * @param request - canonical base64 payload and optional display name.
+   * @param signal - optional caller cancellation.
+   */
+  async uploadRemoteFile(
+    sessionId: string,
+    request: { readonly data: string; readonly name?: string },
+    signal?: AbortSignal,
+  ): Promise<{
+    readonly receiptId: string
+    readonly file: { readonly attachmentId: string; readonly name: string; readonly bytes: number }
+  }> {
+    return await this.invoke<{
+      readonly receiptId: string
+      readonly file: { readonly attachmentId: string; readonly name: string; readonly bytes: number }
+    }>('fileUploads/upload', { agentId: sessionId, request }, signal)
   }
 }
 

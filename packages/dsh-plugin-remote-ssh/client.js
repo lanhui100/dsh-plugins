@@ -41,6 +41,8 @@ window.__ModuleLoader__.load({
     const SESSION_UNPIN_ROUTE = '/remote-ssh/session-unpin'
     const SESSION_RENAME_ROUTE = '/remote-ssh/session-rename'
     const SESSION_SELECT_MODEL_ROUTE = '/remote-ssh/session-select-model'
+    const SESSION_ATTACHMENT_ROUTE = '/remote-ssh/attachment'
+    const SESSION_FILE_UPLOAD_ROUTE = '/remote-ssh/file-upload'
     const AVAILABLE_HOSTS_ROUTE = '/remote-ssh/available-hosts'
     const ADD_HOST_ROUTE = '/remote-ssh/add-host'
     const REMOVE_HOST_ROUTE = '/remote-ssh/remove-host'
@@ -1155,10 +1157,26 @@ window.__ModuleLoader__.load({
             }
           }
         },
-        attachment: (...args) => {
+        attachment: async (...args) => {
           const { id } = sessionTargetOfRequest(args)
           if (!isRemote(id)) return originalCall('attachment', args)
-          return Promise.resolve({ ok: false, error: new Error('remote-ssh: 远端会话图片读取尚未接通') })
+          const req = (args && typeof args[0] === 'object' && args[0] !== null) ? args[0] : {}
+          const attachmentId = typeof req.attachmentId === 'string' ? req.attachmentId : undefined
+          const signal = args[1]
+          if (!attachmentId) return { ok: false, error: new Error('attachmentId is required') }
+          try {
+            const res = await fetch(SESSION_ATTACHMENT_ROUTE, {
+              method: 'POST',
+              headers: { 'content-type': 'application/json', accept: 'application/json' },
+              body: JSON.stringify({ sessionId: id, attachmentId }),
+              signal,
+            })
+            const data = await res.json().catch(() => null)
+            if (data && typeof data === 'object' && 'ok' in data) return data
+            return { ok: false, error: new Error((data && data.message) || `HTTP ${res.status}`) }
+          } catch (error) {
+            return { ok: false, error: error instanceof Error ? error : new Error(String(error)) }
+          }
         },
         create: async (...args) => {
           const req = (args && typeof args[0] === 'object' && args[0] !== null) ? args[0] : {}
@@ -4007,6 +4025,100 @@ window.__ModuleLoader__.load({
       }
     }
 
+    /** Encode a byte array as base64 without a main-thread byte loop per byte. */
+    function uint8ToBase64(bytes) {
+      let binary = ''
+      const CHUNK = 0x8000
+      for (let i = 0; i < bytes.length; i += CHUNK) {
+        binary += String.fromCharCode.apply(null, bytes.subarray(i, i + CHUNK))
+      }
+      return btoa(binary)
+    }
+
+    /**
+     * Route remote-session generic-file uploads through the tunnel: the
+     * official composer calls `ctx.fileUpload.upload` with a browser Blob,
+     * which the stock runtime POSTs to the *local* server where the remote
+     * session id is unknown. For remote ids we encode the body and stage the
+     * receipt on the remote host instead. Local ids pass through untouched.
+     * Also wraps `ctx.remote.fileUploads.upload` for direct RPC callers.
+     * @param ctx - client plugin context.
+     * @returns disposer restoring the original upload implementations.
+     */
+    function installFileUploadProxy(ctx) {
+      const isRemote = (id) => id !== undefined && (remoteSessionIds.has(id) || isNamespacedRemoteId(id) || rawToNamespaced.has(id))
+      const restores = []
+
+      const postUpload = async (id, base64, name, signal) => {
+        const res = await fetch(SESSION_FILE_UPLOAD_ROUTE, {
+          method: 'POST',
+          headers: { 'content-type': 'application/json', accept: 'application/json' },
+          body: JSON.stringify({ sessionId: id, data: base64, ...(name !== undefined ? { name } : {}) }),
+          signal,
+        })
+        const data = await res.json().catch(() => null)
+        if (data && typeof data === 'object' && 'ok' in data) return data
+        return { ok: false, error: new Error((data && data.message) || `HTTP ${res.status}`) }
+      }
+
+      try {
+        const remoteNs = ctx.remote && ctx.remote.fileUploads
+        if (remoteNs && typeof remoteNs.upload === 'function') {
+          const desc = Object.getOwnPropertyDescriptor(remoteNs, 'upload')
+          const orig = desc && typeof desc.get === 'function' ? desc.get.call(remoteNs) : remoteNs.upload
+          const wrapped = async (...args) => {
+            const id = args[0]
+            if (!isRemote(id)) return orig(...args)
+            const req = (args && typeof args[1] === 'object' && args[1] !== null) ? args[1] : {}
+            const signal = args[2]
+            try {
+              if (typeof req.data !== 'string') return { ok: false, error: new Error('upload request requires base64 data') }
+              return await postUpload(id, req.data, typeof req.name === 'string' ? req.name : undefined, signal)
+            } catch (error) {
+              return { ok: false, error: error instanceof Error ? error : new Error(String(error)) }
+            }
+          }
+          Object.defineProperty(remoteNs, 'upload', { configurable: true, enumerable: true, get: () => wrapped })
+          restores.push(() => { if (desc) Object.defineProperty(remoteNs, 'upload', desc) })
+        }
+      } catch (_) {}
+
+      try {
+        const svc = ctx.fileUpload
+        if (svc && typeof svc.upload === 'function') {
+          const orig = svc.upload
+          const wrapped = async (...args) => {
+            const id = args[0]
+            if (!isRemote(id)) return orig(...args)
+            const data = args[1]
+            const name = args[2]
+            const signal = args[3]
+            const onProgress = args[4]
+            try {
+              let base64
+              if (data instanceof Uint8Array) {
+                base64 = uint8ToBase64(data)
+              } else if (data && typeof data.arrayBuffer === 'function') {
+                base64 = uint8ToBase64(new Uint8Array(await data.arrayBuffer()))
+              } else {
+                return { ok: false, error: new Error('unsupported upload body for remote session') }
+              }
+              if (typeof onProgress === 'function') {
+                try { onProgress({ loaded: base64.length, total: base64.length }) } catch (_) {}
+              }
+              return await postUpload(id, base64, name, signal)
+            } catch (error) {
+              return { ok: false, error: error instanceof Error ? error : new Error(String(error)) }
+            }
+          }
+          svc.upload = wrapped
+          restores.push(() => { svc.upload = orig })
+        }
+      } catch (_) {}
+
+      return () => { for (const restore of restores) { try { restore() } catch (_) {} } }
+    }
+
     /**
      * Activate the integration: publish remote workspaces/sessions into the
      * official models and wrap the session namespace for remote interception.
@@ -4020,6 +4132,7 @@ window.__ModuleLoader__.load({
       lastSnapshotFingerprint = null
       ensureWorkspaceTreeMode(ctx)
       const restoreProxy = installSessionProxy(ctx)
+      const restoreFileUpload = installFileUploadProxy(ctx)
       const restoreGuardian = installWorkspaceGuardian(ctx)
       const restoreStyles = installStyles()
       const restoreDecorator = installTitleDecorator(ctx)
@@ -4067,6 +4180,7 @@ window.__ModuleLoader__.load({
         }
         registerPendingPublisher = null
         restoreProxy()
+        restoreFileUpload()
         restoreGuardian()
         restoreStyles()
         restoreDecorator()
@@ -4085,7 +4199,7 @@ window.__ModuleLoader__.load({
 
     exports.apply = apply
     exports.removeRemoteHost = removeRemoteHost
-    exports.inject = ['workspaces', 'sessions', 'remote', 'remote.session', 'remote.workspace']
+    exports.inject = ['workspaces', 'sessions', 'remote', 'remote.session', 'remote.workspace', 'fileUpload']
     return module.exports
   },
 })

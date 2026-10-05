@@ -283,6 +283,15 @@ class RemoteService extends Service {
   }
 }
 
+class FileUploadService extends Service {
+  constructor(ctx) {
+    super(ctx, 'fileUpload')
+  }
+  upload(...args) {
+    return Promise.resolve({ ok: true, value: { method: 'upload', args } })
+  }
+}
+
 class RemoteSessionService extends Service {
   constructor(ctx) {
     super(ctx, 'remote.session')
@@ -330,6 +339,7 @@ root.plugin(RemoteSessionService)
 root.plugin(RemoteWorkspaceService)
 root.plugin(WorkspacesService)
 root.plugin(SessionsService)
+root.plugin(FileUploadService)
 
 const fork = root.plugin({
   name: registration.id,
