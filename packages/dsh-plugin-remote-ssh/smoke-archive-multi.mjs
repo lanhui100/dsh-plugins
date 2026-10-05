@@ -159,6 +159,16 @@ const clientExports = registration.factory((specifier) => {
   throw new Error(`unexpected external request: ${specifier}`)
 })
 
+class RemoteWorkspaceFilesService extends Service {
+  constructor(ctx) {
+    super(ctx, 'remote.workspaceFiles')
+    this.stat = (...args) => Promise.resolve({ ok: true, value: {} })
+    this.read = (...args) => Promise.resolve({ ok: true, value: {} })
+    this.readBytes = (...args) => Promise.resolve({ ok: true, value: {} })
+    this.list = (...args) => Promise.resolve({ ok: true, value: {} })
+  }
+}
+
 class RemoteCommandsService extends Service {
   constructor(ctx) {
     super(ctx, 'remote.commands')
@@ -273,6 +283,7 @@ class UiSessionService extends Service {
 }
 
 const root = new Context()
+root.plugin(RemoteWorkspaceFilesService)
 root.plugin(RemoteCommandsService)
 root.plugin(RemoteService)
 root.plugin(RemoteSessionService)
@@ -460,6 +471,7 @@ class ReplaceOnlyWorkspacesService extends Service {
 }
 
 const root2 = new Context()
+root2.plugin(RemoteWorkspaceFilesService)
 root2.plugin(RemoteCommandsService)
 root2.plugin(RemoteService)
 root2.plugin(RemoteSessionService)
