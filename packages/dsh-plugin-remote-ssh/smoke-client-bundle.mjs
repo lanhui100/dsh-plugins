@@ -79,6 +79,13 @@ globalThis.fetch = async (url, opts) => {
       }),
     }
   }
+  if (urlStr.includes('/remote-ssh/session-update-queue')) {
+    return {
+      ok: true,
+      status: 200,
+      json: async () => ({ ok: true, value: { accepted: true } }),
+    }
+  }
   if (urlStr.includes('/remote-ssh/prompt')) {
     return {
       ok: true,
@@ -384,7 +391,7 @@ class CommandUiService extends Service {
 class RemoteSessionService extends Service {
   constructor(ctx) {
     super(ctx, 'remote.session')
-    for (const method of ['page', 'follow', 'projections', 'prompt', 'cancel', 'rename', 'selectModel', 'attachment', 'create']) {
+    for (const method of ['page', 'follow', 'projections', 'prompt', 'cancel', 'rename', 'selectModel', 'updateQueue', 'attachment', 'create']) {
       Object.defineProperty(this, method, {
         configurable: true,
         enumerable: true,
@@ -749,6 +756,25 @@ const localSelectModel = await pluginCtx.remote.session.selectModel({
   model: 'deepseek-chat',
 })
 assert.equal(localSelectModel.value?.method, 'selectModel', 'Local selectModel must pass through')
+
+// Session actions: updateQueue
+// Remote branch: updateQueue forwards to /remote-ssh/session-update-queue
+const updateQueueRes = await pluginCtx.remote.session.updateQueue({
+  sessionId: 'session-demo-1',
+  itemId: 'item-q-1',
+  action: { kind: 'steer' },
+})
+assert.ok(updateQueueRes.ok, 'Remote updateQueue request must succeed')
+assert.equal(updateQueueRes.value?.accepted, true, 'Remote updateQueue must return accepted')
+assert.ok(requestedUrls.some((u) => u.includes('/remote-ssh/session-update-queue')), 'updateQueue must hit /remote-ssh/session-update-queue')
+
+// Local branch: updateQueue passes through
+const localUpdateQueue = await pluginCtx.remote.session.updateQueue({
+  sessionId: 'session-local-x',
+  itemId: 'item-q-2',
+  action: { kind: 'remove' },
+})
+assert.equal(localUpdateQueue.value?.method, 'updateQueue', 'Local updateQueue must pass through')
 
 // Session actions: attachment read forwards to /remote-ssh/attachment
 const attachmentRes = await pluginCtx.remote.session.attachment({ sessionId: 'session-demo-1', attachmentId: 'att-1' })

@@ -901,7 +901,7 @@ window.__ModuleLoader__.load({
     function installSessionProxy(ctx) {
       const ns = ctx.remote && ctx.remote.session
       if (!ns) return () => {}
-      const methods = ['page', 'follow', 'projections', 'prompt', 'cancel', 'rename', 'selectModel', 'attachment', 'create']
+      const methods = ['page', 'follow', 'projections', 'prompt', 'cancel', 'rename', 'selectModel', 'updateQueue', 'attachment', 'create']
       const saved = new Map()
       for (const method of methods) {
         const desc = Object.getOwnPropertyDescriptor(ns, method)
@@ -925,6 +925,37 @@ window.__ModuleLoader__.load({
           throw new Error((errBody && errBody.message) || `HTTP ${res.status}`)
         }
         return res.json()
+      }
+
+      async function syncSessionProjections(sessionId) {
+        if (!sessionId || !isRemote(sessionId)) return
+        try {
+          const raw = await remoteFetchRaw(sessionId)
+          if (!raw || !raw.projections) return
+          const asOfSeq = typeof raw.asOfSeq === 'number' ? raw.asOfSeq : 0
+          const values = raw.projections || {}
+
+          // 1. Direct model injection if session instance is accessible
+          if (ctx.sessions) {
+            const binding = typeof ctx.sessions.binding === 'function' ? ctx.sessions.binding(sessionId) : undefined
+            const sessionModel = binding?.session || ctx.sessions.byId?.[sessionId]
+            if (sessionModel?.projections && typeof sessionModel.projections.seed === 'function') {
+              sessionModel.projections.seed({ asOfSeq, values })
+            } else if (typeof ctx.sessions.handleControlFrame === 'function') {
+              // 2. Feed as Session Controller live control baseline
+              ctx.sessions.handleControlFrame({
+                type: 'baseline',
+                value: {
+                  projections: {
+                    [sessionId]: { asOfSeq, values },
+                  },
+                },
+              })
+            }
+          }
+        } catch (err) {
+          console.warn(`remote-ssh: failed to sync projections for ${sessionId}:`, err)
+        }
       }
 
       const wrap = {
@@ -1023,9 +1054,14 @@ window.__ModuleLoader__.load({
                           ctx.sessions.handleSessionStatus(id, false)
                         }
                       }
-                      if (frame.type === 'event' && frame.event && typeof frame.event.time === 'number') {
-                        if (typeof ctx.sessions.handleSessionActivity === 'function') {
-                          ctx.sessions.handleSessionActivity(id, frame.event.time)
+                      if (frame.type === 'event' && frame.event) {
+                        if (typeof frame.event.time === 'number') {
+                          if (typeof ctx.sessions.handleSessionActivity === 'function') {
+                            ctx.sessions.handleSessionActivity(id, frame.event.time)
+                          }
+                        }
+                        if (frame.event.type === 'agent/inbox/spliced') {
+                          void syncSessionProjections(id)
                         }
                       }
                     }
@@ -1110,6 +1146,10 @@ window.__ModuleLoader__.load({
               if (data.ok && ctx.sessions && typeof ctx.sessions.handleSessionStatus === 'function') {
                 ctx.sessions.handleSessionStatus(id, true)
               }
+              if (data.ok) {
+                // Immediately synchronize inbox and session projections so QueueDock appears without leaving
+                void syncSessionProjections(id)
+              }
               return data
             }
             if (!res.ok) {
@@ -1118,6 +1158,7 @@ window.__ModuleLoader__.load({
             if (ctx.sessions && typeof ctx.sessions.handleSessionStatus === 'function') {
               ctx.sessions.handleSessionStatus(id, true)
             }
+            void syncSessionProjections(id)
             return { ok: true, value: data ?? { accepted: true } }
           } catch (error) {
             return { ok: false, error: error instanceof Error ? error : new Error(String(error)) }
@@ -1268,6 +1309,46 @@ window.__ModuleLoader__.load({
             return { ok: false, error: new Error((data && data.message) || `HTTP ${res.status}`) }
           } catch (error) {
             return { ok: false, error: error instanceof Error ? error : new Error(String(error)) }
+          }
+        },
+        updateQueue: async (...args) => {
+          const { id } = sessionTargetOfRequest(args)
+          if (!isRemote(id)) return originalCall('updateQueue', args)
+          const req = (args && typeof args[0] === 'object' && args[0] !== null) ? args[0] : {}
+          const itemId = typeof req.itemId === 'string' ? req.itemId : undefined
+          const action = typeof req.action === 'object' && req.action !== null ? req.action : undefined
+          const signal = args[1]
+          if (!itemId || !action || typeof action.kind !== 'string') {
+            return { ok: false, error: new Error('itemId and action are required for updateQueue') }
+          }
+          try {
+            const res = await fetch(SESSION_UPDATE_QUEUE_ROUTE, {
+              method: 'POST',
+              headers: { 'content-type': 'application/json', accept: 'application/json' },
+              body: JSON.stringify({ sessionId: id, itemId, action }),
+              signal,
+            })
+            const data = await res.json().catch(() => null)
+            if (data && data.ok) {
+              // Immediately sync projections so QueueDock reflects the removal/steer right away
+              void syncSessionProjections(id)
+              return { ok: true, value: data.value ?? { accepted: true } }
+            }
+            return {
+              ok: false,
+              error: {
+                code: data?.error?.code || 'remote-ssh/update-queue-failed',
+                message: data?.error?.message || `HTTP ${res.status}`,
+              },
+            }
+          } catch (error) {
+            return {
+              ok: false,
+              error: {
+                code: 'remote-ssh/update-queue-error',
+                message: error instanceof Error ? error.message : String(error),
+              },
+            }
           }
         },
         create: async (...args) => {

@@ -58,6 +58,9 @@ export const SESSION_RENAME_ROUTE = '/remote-ssh/session-rename'
 /** Absolute pathname for selecting model of a remote session. */
 export const SESSION_SELECT_MODEL_ROUTE = '/remote-ssh/session-select-model'
 
+/** Absolute pathname for updating a remote session queue item (e.g. steer or remove). */
+export const SESSION_UPDATE_QUEUE_ROUTE = '/remote-ssh/session-update-queue'
+
 /** Absolute pathname for reading a remote session image attachment. */
 export const SESSION_ATTACHMENT_ROUTE = '/remote-ssh/attachment'
 
@@ -1553,6 +1556,39 @@ export function registerRemoteSshRoute(
         }
       },
     }), 'remote-ssh: session select-model route')
+
+    scoped.effect(() => scoped.webServer.register({
+      kind: 'exact',
+      path: SESSION_UPDATE_QUEUE_ROUTE,
+      handler: async (req, res) => {
+        try {
+          const body = await readJsonBody(req)
+          const rawSessionId = typeof body.sessionId === 'string' ? body.sessionId.trim() : undefined
+          const itemId = typeof body.itemId === 'string' ? body.itemId.trim() : undefined
+          const action = typeof body.action === 'object' && body.action !== null ? body.action as { kind: string } : undefined
+          if (!rawSessionId || !itemId || !action || typeof action.kind !== 'string') {
+            sendJson(res, 400, { ok: false, error: { message: 'Fields "sessionId", "itemId", and "action" are required' } })
+            return
+          }
+          const target = resolveTarget(rawSessionId)
+          if (target.caller === undefined) {
+            sendJson(res, 503, { ok: false, error: { message: 'tunnel-not-ready' } })
+            return
+          }
+          const result = await target.caller.updateRemoteSessionQueue(
+            target.originalSessionId,
+            itemId,
+            action,
+          )
+          sendJson(res, 200, { ok: true, value: result })
+        } catch (error) {
+          sendJson(res, 200, {
+            ok: false,
+            error: { message: error instanceof Error ? error.message : String(error) },
+          })
+        }
+      },
+    }), 'remote-ssh: session update-queue route')
 
     scoped.effect(() => scoped.webServer.register({
       kind: 'exact',

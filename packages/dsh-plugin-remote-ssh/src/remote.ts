@@ -868,6 +868,26 @@ export class RemoteCaller {
   }
 
   /**
+   * Mutate one pending queue occurrence in a remote session (e.g. steer or remove).
+   * @param sessionId - remote session identity.
+   * @param itemId - queue item ID.
+   * @param action - queue action, e.g. { kind: 'steer' } or { kind: 'remove' }.
+   * @param signal - optional caller cancellation.
+   */
+  async updateRemoteSessionQueue(
+    sessionId: string,
+    itemId: string,
+    action: { readonly kind: string; readonly content?: readonly unknown[] },
+    signal?: AbortSignal,
+  ): Promise<{ readonly accepted: boolean }> {
+    return await this.invoke<{ readonly accepted: boolean }>(
+      'session/updateQueue',
+      { request: { sessionId, itemId, action } },
+      signal,
+    )
+  }
+
+  /**
    * Read one durable image attachment referenced by a remote session.
    * @param sessionId - remote session identity.
    * @param attachmentId - opaque attachment id found in the session log.
