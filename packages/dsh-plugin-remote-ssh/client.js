@@ -41,6 +41,7 @@ window.__ModuleLoader__.load({
     const SESSION_UNPIN_ROUTE = '/remote-ssh/session-unpin'
     const SESSION_RENAME_ROUTE = '/remote-ssh/session-rename'
     const SESSION_SELECT_MODEL_ROUTE = '/remote-ssh/session-select-model'
+    const SESSION_UPDATE_QUEUE_ROUTE = '/remote-ssh/session-update-queue'
     const SESSION_ATTACHMENT_ROUTE = '/remote-ssh/attachment'
     const SESSION_FILE_UPLOAD_ROUTE = '/remote-ssh/file-upload'
     const SESSION_COMMANDS_LIST_ROUTE = '/remote-ssh/commands-list'
@@ -265,6 +266,49 @@ window.__ModuleLoader__.load({
         homes: (body.homes || []).map((h) => `${h && h.host}|${h && h.home}`).join(','),
       }
       return JSON.stringify(stable)
+    }
+
+    /**
+     * Reassert each remote session's running state against the live client list
+     * store, repairing only true divergences.
+     *
+     * The official UiSession turns a running true→false transition into a
+     * "completed" green dot (completionUnread) whenever the session is not the
+     * main view. A follow-stream transport close mid-turn (SSE idle timeout or
+     * the route's 30s heartbeat abort) produces exactly that false transition
+     * even while the remote agent is still running — and because the remote
+     * snapshot keeps reporting running=true, the snapshot fingerprint never
+     * changes, so the poll would otherwise skip forever. Comparing each row
+     * against the current list-store running bit catches the drift and reasserts
+     * the authoritative remote state.
+     * @param ctx - client plugin context.
+     * @param body - parsed /remote-ssh/sessions response body.
+     */
+    function repairRunningStates(ctx, body) {
+      const sessions = ctx.sessions
+      if (!sessions || typeof sessions.handleSessionStatus !== 'function') return
+      let listStore = null
+      try {
+        if (sessions.list && typeof sessions.list.getSnapshot === 'function') {
+          listStore = sessions.list.getSnapshot()
+        }
+      } catch {
+        // Older official models without a list store simply skip the repair.
+      }
+      if (!listStore || !listStore.byId) return
+      const sourceSessions = Array.isArray(body.sessions) && body.sessions.length > 0
+        ? body.sessions
+        : (Array.isArray(body.workspaces) ? body.workspaces.flatMap((ws) => ws.sessions || []) : [])
+      for (const s of sourceSessions) {
+        if (!s || !s.sessionId) continue
+        const sid = String(s.sessionId)
+        const row = listStore.byId[sid]
+        if (!row) continue
+        const remoteRunning = Boolean(s.running)
+        if (Boolean(row.running) !== remoteRunning) {
+          sessions.handleSessionStatus(sid, remoteRunning)
+        }
+      }
     }
 
     function reapplyRemoteWorkspaces(ctx) {
@@ -607,7 +651,15 @@ window.__ModuleLoader__.load({
         // remote workspace and session, forcing the host model to re-render the
         // whole sidebar tree even when nothing changed.
         const fingerprint = snapshotFingerprint(body)
-        if (fingerprint === lastSnapshotFingerprint) return
+        if (fingerprint === lastSnapshotFingerprint) {
+          // The wire is unchanged, but the local running state can still have
+          // drifted: a follow-stream transport close mid-turn resets the session
+          // to idle, which the official UiSession paints as a "completed" green
+          // dot even though the remote agent is still running. Reassert the
+          // authoritative running bit here so the poll heals the drift.
+          repairRunningStates(ctx, body)
+          return
+        }
         lastSnapshotFingerprint = fingerprint
 
         const sessions = ctx.sessions
@@ -780,6 +832,17 @@ window.__ModuleLoader__.load({
           }
         }
         if (sessions && typeof sessions.handleSessionAdded === 'function') {
+          // Live list store snapshot for the running-bit drift check below.
+          // Taken once before the loop; sessions upserted mid-loop still get
+          // their running bit from handleSessionStatus (the fp-changed branch).
+          let liveListStore = null
+          try {
+            if (sessions.list && typeof sessions.list.getSnapshot === 'function') {
+              liveListStore = sessions.list.getSnapshot()
+            }
+          } catch {
+            // Older official models without a list store skip the drift check.
+          }
           for (const s of nextSessions) {
             const sid = s.sessionId
             const fp = `${s.updatedAt}|${s.running}|${s.title ?? ''}|${s.blank}|${s.origin ?? ''}|${s.parentSessionId ?? ''}`
@@ -790,6 +853,15 @@ window.__ModuleLoader__.load({
                 sessions.handleSessionStatus(sid, Boolean(s.running))
               }
               knownSessionFingerprints.set(sid, fp)
+            } else if (typeof sessions.handleSessionStatus === 'function') {
+              // Row fingerprint unchanged does not prove the local UI agrees: a
+              // follow-stream transport close mid-turn can have reset this
+              // session to idle/completed while the remote still reports it
+              // running. Reassert only when the live store actually diverges.
+              const row = liveListStore && liveListStore.byId ? liveListStore.byId[sid] : undefined
+              if (row && Boolean(row.running) !== Boolean(s.running)) {
+                sessions.handleSessionStatus(sid, Boolean(s.running))
+              }
             }
           }
         }
@@ -882,6 +954,11 @@ window.__ModuleLoader__.load({
           const followUrl = `${SESSION_FOLLOW_ROUTE}?id=${encodeURIComponent(id)}${parentQuery}`
 
           let streamed = false
+          // Set once a terminal turn frame arrives. The finally block only
+          // resets the session to idle when the turn ended or the consumer
+          // closed the stream — a transport close mid-turn must not paint a
+          // still-running session as "completed".
+          let sawTurnEnd = false
           try {
             const res = await fetch(followUrl, {
               headers: { accept: 'text/event-stream' },
@@ -941,6 +1018,7 @@ window.__ModuleLoader__.load({
                           ctx.sessions.handleSessionStatus(id, true)
                         }
                       } else if (isTurnEnd) {
+                        sawTurnEnd = true
                         if (typeof ctx.sessions.handleSessionStatus === 'function') {
                           ctx.sessions.handleSessionStatus(id, false)
                         }
@@ -968,7 +1046,15 @@ window.__ModuleLoader__.load({
               } finally {
                 try { reader.releaseLock?.() } catch {}
                 if (ctx.sessions && typeof ctx.sessions.handleSessionStatus === 'function') {
-                  ctx.sessions.handleSessionStatus(id, false)
+                  // Reset to idle only when the turn actually ended or the
+                  // consumer closed the stream (navigation / cancel). A
+                  // transport close mid-turn (SSE idle timeout / the route's
+                  // 30s heartbeat abort) must NOT mark the session completed
+                  // while the remote agent is still running; the next poll
+                  // reasserts the authoritative running bit.
+                  if (sawTurnEnd || (signal && signal.aborted)) {
+                    ctx.sessions.handleSessionStatus(id, false)
+                  }
                 }
               }
             }
@@ -994,9 +1080,9 @@ window.__ModuleLoader__.load({
               projections: { asOfSeq: raw.asOfSeq || 0, values: raw.projections || {} },
               assistantStream: { revision: 0 },
             }
-            if (ctx.sessions && typeof ctx.sessions.handleSessionStatus === 'function') {
-              ctx.sessions.handleSessionStatus(id, false)
-            }
+            // No idle reset here: this fallback carries no live turn frames, so
+            // forcing running=false could paint a still-running session as
+            // "completed". The 60s poll reasserts the authoritative state.
             await new Promise((resolve) => {
               if (!signal || signal.aborted) resolve()
               else signal.addEventListener('abort', resolve, { once: true })

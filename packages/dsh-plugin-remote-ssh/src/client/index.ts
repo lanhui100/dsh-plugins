@@ -57,6 +57,9 @@ export const SESSION_RENAME_ROUTE = '/remote-ssh/session-rename'
 /** Host route for selecting model of a remote session. */
 export const SESSION_SELECT_MODEL_ROUTE = '/remote-ssh/session-select-model'
 
+/** Host route for updating a remote session queue item (e.g. steer or remove). */
+export const SESSION_UPDATE_QUEUE_ROUTE = '/remote-ssh/session-update-queue'
+
 /** Host route for reading a remote session image attachment. */
 export const SESSION_ATTACHMENT_ROUTE = '/remote-ssh/attachment'
 
@@ -198,6 +201,13 @@ export interface RemoteSshClientModels {
     handleSessionRemoved(sessionId: string): void
     handleSessionStatus?(sessionId: string, running: boolean): void
     handleSessionActivity?(sessionId: string, updatedAt: number): void
+    /**
+     * Live list store snapshot; the running-bit drift repair reads it to detect
+     * sessions whose local running state diverged from the remote snapshot.
+     */
+    list?: {
+      getSnapshot(): { byId?: Record<string, { running?: boolean }> }
+    }
   }
 }
 
@@ -253,8 +263,12 @@ export function installWorkspaceGuardian(ctx: Context): () => void {
  * Performance contract (mirrors `client.js`): the Host snapshot is fanned out
  * only when the snapshot fingerprint changed — an unchanged poll result is
  * dropped before any model write, so a long-idle client never re-renders the
- * sidebar tree. DOM decorations are additionally coalesced to one pass per
- * animation frame by the title decorator.
+ * sidebar tree. Running-state drift is repaired even on unchanged polls: a
+ * follow-stream transport close mid-turn resets the session to idle, which the
+ * official UiSession paints as a "completed" green dot while the remote agent
+ * is still running, so each poll reasserts the authoritative running bit
+ * against the live list store. DOM decorations are additionally coalesced to
+ * one pass per animation frame by the title decorator.
  * @param ctx - client plugin context.
  */
 export function reconcileRemoteSource(ctx: Context): Promise<void> {
