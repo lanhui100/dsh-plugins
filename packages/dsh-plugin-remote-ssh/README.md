@@ -27,11 +27,11 @@
 - **响应性**：隧道就绪即预热 Cookie（`caller.warmup()`），首次 `/remote-ssh` 跳过 SSH+token 往返（实测预热 ~1s + 列表 ~2s）；所有远端 fetch 有 30s 截止（`requestTimeoutMs`），取消信号从命令直传 RPC，杜绝无限挂起。
 - 经隧道调用远端 `/api/session/list`（携带换取的 Cookie 与 `_request` 参数信封），拉取远端全部会话（包括标题、运行状态、工作目录 cwd）。
 - Host 入口声明 `inject = ['commands']`（Cordis 在激活前解析服务；缺声明会让 `ctx.commands` 访问抛错、条目永不激活，在桌面还会连带清空用户 patch 层）。
-- Client 入口声明 `inject = ['workspaces', 'sessions', 'remote', 'remote.session', 'remote.workspace', 'fileUpload', 'remote.commands']`（Cordis 严格校验 Context 属性访问权限；访问关联服务命名空间 `ctx.remote.session`、`ctx.remote.workspace` 与 `ctx.remote.commands` 必须显式声明，否则抛错导致桌面 web-boot 失败）。
+- Client 入口声明 `inject = ['workspaces', 'sessions', 'remote', 'remote.session', 'remote.workspace', 'fileUpload', 'remote.commands', 'remote.workspaceFiles']`（Cordis 严格校验 Context 属性访问权限；访问关联服务命名空间 `ctx.remote.session`、`ctx.remote.workspace`、`ctx.remote.commands` 与 `ctx.remote.workspaceFiles` 必须显式声明，否则抛错导致桌面 web-boot 失败）。
 - Host 端注册 `/remote-ssh` 人令（在对话输入框输入即可列出远端会话）。
 - **完整复用官方 UI（零自定义界面）**：Client 半不注册任何槽位/面板/侧边栏。Host 注册只读路由 `GET /remote-ssh/sessions`（按 cwd 聚合的工作区与会话快照）、`GET /remote-ssh/session?id=...`（人性化详情）与 `GET /remote-ssh/session-raw?id=...`（原始 wire 事件，供官方会话管道直接消费）。
 - **注入官方模型**：Client 端把远程工作区/会话 upsert 进 `ctx.workspaces.list`（`upsertView`）与 `ctx.sessions`（`handleSessionAdded`），因此远程工作区直接出现在官方 `WorkspaceBrowser` 侧边栏树里——官方文件夹折叠/展开、会话行、状态点、右键菜单全部原样生效。远程树采用**三级层级**：每台已连接主机注册一个一级主机根文件夹（`remote:<host>:hostroot`，路径为远端 `$HOME`，标题为截断后的主机别名，图标替换为服务器图标），其下按官方“工作区树”分组的路径前缀自动嵌套各远程工作区文件夹（文件夹图标 + 工作区名称），会话为第三级菜单；`GET /remote-ssh/sessions` 新增 `homes` 字段下发每台主机的远端 home 路径。
-- **代理会话流**：Client 端包装 `ctx.remote.session`（以及 `ctx.remote.subagents`）的 `page` / `follow` / `projections` / `prompt` / `cancel` / `rename` / `selectModel` / `attachment`；命中已知远程会话 id 时从隧道路由应答，本地会话原样穿透。点击侧边栏远程会话即走官方 `openSession` → 官方 `ui-conversation` 用远程原始事件组装官方消息流。
+- **代理会话与工作区文件流**：Client 端包装 `ctx.remote.session`（以及 `ctx.remote.subagents`）的 `page` / `follow` / `projections` / `prompt` / `cancel` / `rename` / `selectModel` / `attachment` 与 `ctx.remote.workspaceFiles`（`stat` / `read` / `readBytes` / `list`）；命中已知远程会话 id 时从隧道路由应答，本地会话原样穿透。点击侧边栏远程会话即走官方 `openSession` → 官方 `ui-conversation` 用远程原始事件组装官方消息流，右侧工作区文件树与文件预览卡片原生可用。
 - **新建会话（`create`）与空白会话复用**：Client 端拦截 `ctx.remote.session.create`；官方 UI 会先用 `sessionId` 复用工作区里最近的空白会话，插件将命名空间化的会话 id 还原为远端原始 id 后再经 `POST /remote-ssh/create` 转发，远端按 id 幂等 adopt——因此远程工作区点击「新会话」不会在远端生成重复的空白会话副本；命中已知 id 时真正复用，未命中时新建。
 - **会话操作代理（归档/置顶/重命名）**：Client 端拦截 `ctx.remote.workspace`（`archiveSession`, `unarchiveSession`, `pinSession`, `unpinSession`）与 `ctx.remote.session.rename`；命中已知远程会话时转发 Host 路由（`POST /remote-ssh/session-archive`、`session-unarchive`、`session-pin`、`session-unpin`、`session-rename`），并在本地与远端集合间执行双向隔离与合并，实时刷新官方 `WorkspaceBrowser` 树与会话标题；本地会话原样透传。多主机（`RemoteHostManager`）模式下操作响应与会话快照使用同一命名空间身份 `remote:<host>:<id>`，客户端按主机前缀合并远程归档/置顶集合并保留其它主机与本地状态；legacy 单 caller 保持原始 ID 行为。
 - **附件与加号菜单代理（attachment / file upload / commands）**：Client 端包装 `ctx.remote.session.attachment`、`ctx.remote.fileUploads.upload`、`ctx.fileUpload.upload` 与 `ctx.remote.commands`；解决此前远程会话中点击输入框加号（`+`）因本地缺失远程会话命令目录报错导致面板不弹出的故障，确保加号菜单顺畅打开且「文件」命令常驻。用户通过加号选择或拖拽宿主机文件时，DOM 捕获阶段拦截默认路径引用行为，直接转为附件草稿并通过隧道上传至远端暂存区；本地会话原样透传。
@@ -80,6 +80,5 @@
 - 仅支持通过 OpenSSH 密钥免密登录的主机配置（如 `~/.ssh/config` 中带 `IdentityFile` 的 `Host` 块）；主机列表由该配置动态发现，无需在插件配置中预写主机别名。
 - 动态添加的主机持久化到 `$DSH_HOME/remote-ssh-hosts.json`，可通过头部浮层/设置面板的“断开”操作移除（`POST /remote-ssh/remove-host`）；**配置预置（`config.host`）的主机断开后仅本会话失联，重启会按配置恢复**。连接失败的新主机不会持久化，可直接重试。
 - 远端主机需部署有 `deepseek-harness` 源码环境或安装有 `dsh`；若未启动，插件会在添加时自动探测并在后台启动 `dsh web`。
-- 图片原生随 prompt content 内联（base64），无需额外上传；远端会话读取（`attachment`）与通用文件（`fileUploads`）上传均已接通。
 - `/remote-ssh/*` 路由由本地 webserver 直接服务，**不经过 `/api` 的浏览器鉴权围栏**：本机任意进程可读该 JSON/SSE；若把 webserver 绑到非回环地址，网络侧同样可读（只读、默认回环绑定）。详见 `.agents/notes/implemented/architecture/2026-10-01-reuse-official-workspace-session-ui.md`。
 - `client.js` 为手工产物，无 sourcemap（扫描器容忍缺失）。
