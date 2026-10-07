@@ -1599,7 +1599,24 @@ window.__ModuleLoader__.load({
                   ])]
                   return { ok: true, value: { archivedSessionIds: mergedArchived } }
                 }
-                return { ok: false, error: new Error(data?.error?.message || `HTTP ${res.status}`) }
+                const errPayload = data?.error
+                const code = typeof errPayload?.code === 'string' ? errPayload.code : undefined
+                const details = errPayload?.details
+                const rpcError = {
+                  code: code || `HTTP ${res.status}`,
+                  message: errPayload?.message || `HTTP ${res.status}`,
+                  details: details !== undefined ? details : {},
+                }
+                return {
+                  ok: false,
+                  error: Object.assign(new Error(rpcError.message), {
+                    name: 'RemoteError',
+                    code: rpcError.code,
+                    details: rpcError.details,
+                    isDSHRemoteError: true,
+                    rpcError,
+                  }),
+                }
               } catch (error) {
                 return { ok: false, error: error instanceof Error ? error : new Error(String(error)) }
               }

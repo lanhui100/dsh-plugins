@@ -1454,9 +1454,14 @@ export function registerRemoteSshRoute(
               : result,
           })
         } catch (error) {
+          const invocationError = error as { code?: string; details?: unknown; message?: string }
           sendJson(res, 200, {
             ok: false,
-            error: { message: error instanceof Error ? error.message : String(error) },
+            error: {
+              code: typeof invocationError?.code === 'string' ? invocationError.code : undefined,
+              message: error instanceof Error ? error.message : String(error),
+              details: invocationError?.details,
+            },
           })
         }
       },

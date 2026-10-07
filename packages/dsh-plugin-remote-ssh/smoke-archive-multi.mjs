@@ -99,11 +99,33 @@ globalThis.fetch = async (url) => {
     }
   }
   if (urlStr.includes('/remote-ssh/session-archive')) {
+    const body = JSON.parse(archiveRequestBody || '{}')
+    if (body.mockActiveRefusal && !body.stopActivity) {
+      return {
+        ok: true,
+        status: 200,
+        json: async () => ({
+          ok: false,
+          error: {
+            code: 'workspace/session-active',
+            message: "cannot archive session 'remote:preprod:active-1': the session is active (job)",
+            details: {
+              sessionId: 'remote:preprod:active-1',
+              activity: [
+                {
+                  kind: 'job',
+                  items: [{ id: 'job-1', label: 'export PATH="/home/dm/.local/bin:$PATH" && tilt up --port=10350' }],
+                },
+              ],
+            },
+          },
+        }),
+      }
+    }
     return {
       ok: true,
       status: 200,
       json: async () => {
-        const body = JSON.parse(archiveRequestBody || '{}')
         const sid = String(body.sessionId || '')
         if (sid && !archived.has(sid)) archived.add(sid)
         return { ok: true, value: { archivedSessionIds: [...archived] } }
@@ -519,6 +541,47 @@ assert.ok(
   wsList2.pinnedSessionIds.includes('remote:preprod:s1') && wsList2.pinnedSessionIds.includes('remote:dev:old-pinned'),
   'Replace-only sync must merge pinned state without recursion',
 )
+
+// Phase 3: active session refusal & confirmation contract
+// When archiving an active remote session without stopActivity, the server returns
+// code: 'workspace/session-active' with activity details.
+// client.js must map this to a RemoteError with rpcError so official UI WorkspaceArchiveError
+// triggers the confirm modal instead of silently swallowing or showing a raw generic error.
+archiveRequestBody = JSON.stringify({
+  sessionId: 'remote:preprod:active-1',
+  mockActiveRefusal: true,
+})
+const activeRefusalRes = await fork2.context.remote.workspace.archiveSession({
+  sessionId: 'remote:preprod:active-1',
+  mockActiveRefusal: true,
+})
+assert.equal(activeRefusalRes.ok, false, 'Archive request on active session must return ok: false')
+assert.ok(activeRefusalRes.error, 'Archive refusal must carry an error')
+assert.equal(activeRefusalRes.error.code, 'workspace/session-active', 'Error code must be workspace/session-active')
+assert.ok(Array.isArray(activeRefusalRes.error.details?.activity), 'Error details must contain activity array')
+assert.equal(activeRefusalRes.error.details.activity[0].kind, 'job', 'Activity entry must match job kind')
+assert.ok(activeRefusalRes.error.rpcError, 'Error must carry rpcError for official WorkspaceArchiveError mapping')
+assert.equal(activeRefusalRes.error.rpcError.code, 'workspace/session-active', 'rpcError code must match')
+assert.deepEqual(activeRefusalRes.error.rpcError.details, activeRefusalRes.error.details, 'rpcError details must match')
+
+// Then when confirming with stopActivity: true, archival must succeed
+archiveRequestBody = JSON.stringify({
+  sessionId: 'remote:preprod:active-1',
+  mockActiveRefusal: true,
+  stopActivity: true,
+})
+const confirmStopArchiveRes = await fork2.context.remote.workspace.archiveSession({
+  sessionId: 'remote:preprod:active-1',
+  mockActiveRefusal: true,
+  stopActivity: true,
+})
+assert.ok(confirmStopArchiveRes.ok, 'Archiving with stopActivity must succeed')
+assert.ok(
+  wsList2.archivedSessionIds.includes('remote:preprod:active-1'),
+  'Session must be added to archivedSessionIds after confirmation',
+)
+
+console.log('all smoke-archive-multi phase-3 (active session refusal contract) assertions passed cleanly!')
 
 await fork2.dispose()
 assert.ok(
