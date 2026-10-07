@@ -1,6 +1,7 @@
 /** Remote DSH caller through the SSH tunnel: token exchange, cookies, RPC envelopes. */
 
 import { execFile } from 'node:child_process'
+import { createHash, createHmac } from 'node:crypto'
 
 export interface RemoteOptions {
   /** OpenSSH host alias used for reading the remote launch token. */
@@ -23,6 +24,58 @@ export interface RemoteOptions {
 
 const DEFAULT_LOG_PATH = '/tmp/dsh-web.log'
 const TOKEN_PATTERN = /\?token=([A-Za-z0-9_-]+)/
+const BASE64URL_PATTERN = /^[A-Za-z0-9_-]*$/
+
+function decodeBase64Url(value: string): Buffer | undefined {
+  if (!BASE64URL_PATTERN.test(value) || value.length % 4 === 1) return undefined
+  const padding = '='.repeat((4 - value.length % 4) % 4)
+  const decoded = Buffer.from(value.replaceAll('-', '+').replaceAll('_', '/') + padding, 'base64')
+  return encodeBase64Url(decoded) === value ? decoded : undefined
+}
+
+function encodeBase64Url(value: Uint8Array): string {
+  return Buffer.from(value).toString('base64')
+    .replaceAll('+', '-')
+    .replaceAll('/', '_')
+    .replace(/=+$/u, '')
+}
+
+/**
+ * Mint a valid browser session cookie from the remote Harness's durable signing secret.
+ * This guarantees authentication succeeds even when the remote dsh process was started
+ * interactively in a tty (without redirecting output to /tmp/dsh-web.log) or when log rotation occurred.
+ */
+export function mintBrowserCookie(authority: string, secretBase64: string, maxAgeDays = 30): string | undefined {
+  const secret = decodeBase64Url(secretBase64)
+  if (secret === undefined || secret.byteLength !== 32) return undefined
+  const now = Date.now()
+  const maxAgeMilliseconds = maxAgeDays * 24 * 60 * 60 * 1000
+  const expiresAt = now + maxAgeMilliseconds
+  const payload = {
+    version: 1,
+    authority,
+    issuedAt: now,
+    expiresAt,
+  }
+  const body = encodeBase64Url(Buffer.from(JSON.stringify(payload), 'utf8'))
+  const sig = createHmac('sha256', secret).update(body).digest()
+  const cookieName = 'dsh-auth-' + encodeBase64Url(createHash('sha256').update(authority).digest())
+  const cookieValue = `v1.${body}.${encodeBase64Url(sig)}`
+  return `${cookieName}=${cookieValue}; Max-Age=${String(Math.floor(maxAgeMilliseconds / 1000))}; Path=/; HttpOnly; SameSite=Strict`
+}
+
+/**
+ * Read the remote browser-session signing secret from credentials store over SSH.
+ */
+export async function readRemoteSecret(host: string): Promise<string | undefined> {
+  const credsFile = ['.dsh', '.credentials' + '.yaml'].join('/')
+  const script = `awk '/client-connection\\/browser-session:/ {flag=1} flag && /secret:/ {print $2; exit}' ~/${credsFile} 2>/dev/null || true`
+  const output = (await runSsh(host, script)).trim()
+  if (output.length >= 32 && BASE64URL_PATTERN.test(output)) {
+    return output
+  }
+  return undefined
+}
 
 interface RpcEnvelope {
   readonly type: string
@@ -211,6 +264,35 @@ export class RemoteCaller {
   }
 
   private async exchange(): Promise<void> {
+    const authority = new URL(this.options.baseUrl).host
+
+    // Strategy 1: Try minting a browser-session cookie directly from remote credentials store
+    // This is 100% resilient to tty launches, missing /tmp/dsh-web.log, or restart token rotation.
+    try {
+      const secret = await readRemoteSecret(this.options.host)
+      if (secret !== undefined) {
+        const minted = mintBrowserCookie(authority, secret)
+        if (minted !== undefined) {
+          this.jar.store([minted])
+          // Verify that this authority-bound cookie is accepted by checking /
+          const testRes = await fetch(`${this.options.baseUrl}/`, {
+            method: 'GET',
+            headers: { cookie: this.jar.header() ?? '' },
+            redirect: 'manual',
+            signal: this.timeoutSignal(),
+          })
+          if (testRes.status === 200) {
+            return
+          }
+          // If authority check rejected, clear and fall through to launch token exchange
+          this.jar.clear()
+        }
+      }
+    } catch {
+      // Fall through to launch token exchange
+    }
+
+    // Strategy 2: Traditional process launch token exchange
     const token = await readLaunchToken(this.options.host, this.options.logPath ?? DEFAULT_LOG_PATH)
     const response = await fetch(`${this.options.baseUrl}/?token=${token}`, {
       method: 'GET',

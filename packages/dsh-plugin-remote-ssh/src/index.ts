@@ -14,6 +14,8 @@ export {
   RemoteCaller,
   RemoteAuthError,
   readLaunchToken,
+  readRemoteSecret,
+  mintBrowserCookie,
   type RemoteInteractionQuestionOption,
   type RemoteInteractionQuestionItem,
   type RemotePendingInteraction,
