@@ -80,6 +80,6 @@
 
 - 仅支持通过 OpenSSH 密钥免密登录的主机配置（如 `~/.ssh/config` 中带 `IdentityFile` 的 `Host` 块）；主机列表由该配置动态发现，无需在插件配置中预写主机别名。
 - 动态添加的主机持久化到 `$DSH_HOME/remote-ssh-hosts.json`，可通过头部浮层/设置面板的“断开”操作移除（`POST /remote-ssh/remove-host`）；**配置预置（`config.host`）的主机断开后仅本会话失联，重启会按配置恢复**。连接失败的新主机不会持久化，可直接重试。
-- 远端主机需部署有 `deepseek-harness` 源码环境或安装有 `dsh`；若未启动，插件会在添加时自动探测并在后台启动 `dsh web`。
+- 远端主机需已启动 `dsh web`（默认端口 `3080`）；建立隧道前插件会执行存活探测，未启动时禁止连接并返回明确错误提示，不擅自在远端自启后台进程（见 `.agents/notes/implemented/feature/2026-10-02-enforce-remote-dsh-and-add-home-workspaces.md`）。
 - `/remote-ssh/*` 路由由本地 webserver 直接服务，**不经过 `/api` 的浏览器鉴权围栏**：本机任意进程可读该 JSON/SSE；若把 webserver 绑到非回环地址，网络侧同样可读（只读、默认回环绑定）。详见 `.agents/notes/implemented/architecture/2026-10-01-reuse-official-workspace-session-ui.md`。
 - `client.js` 为手工产物，无 sourcemap（扫描器容忍缺失）。
