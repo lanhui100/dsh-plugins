@@ -24,7 +24,7 @@
   "scripts": {
     "build": "tsc -b tsconfig.json",
     "typecheck": "tsc --noEmit -p tsconfig.json",
-    "test": "node smoke-client-bundle.mjs && node smoke-workspace-files.mjs && node smoke-create-reuse.mjs && node smoke-host-apply.mjs && node smoke-manager.mjs && node smoke-multi-host.mjs && node smoke-ssh-config.mjs && node smoke-question-card.mjs && node smoke-settings-ui.mjs && node smoke-workspace-btn.mjs && node smoke-archive-multi.mjs && node smoke-command.mjs && node smoke-launcher.mjs && node smoke-performance.mjs && node smoke-keepalive.mjs && node smoke-running-repair.mjs"
+    "test": "node smoke-client-bundle.mjs && node smoke-workspace-files.mjs && node smoke-create-reuse.mjs && node smoke-host-apply.mjs && node smoke-manager.mjs && node smoke-multi-host.mjs && node smoke-ssh-config.mjs && node smoke-question-card.mjs && node smoke-settings-ui.mjs && node smoke-workspace-btn.mjs && node smoke-archive-multi.mjs && node smoke-workspace-archived-views.mjs && node smoke-command.mjs && node smoke-launcher.mjs && node smoke-performance.mjs && node smoke-keepalive.mjs && node smoke-running-repair.mjs"
   },
   "peerDependencies": {
     "@deepseek-ai/cordis": "~4.0.4"

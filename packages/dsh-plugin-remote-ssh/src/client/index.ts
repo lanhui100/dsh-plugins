@@ -153,6 +153,8 @@ export interface RemoteSessionRow {
 export interface RemoteWorkspaceRow {
   readonly cwd: string
   readonly name: string
+  readonly workspaceId?: string
+  readonly sessionIds?: readonly string[]
   readonly sessions: readonly RemoteSessionRow[]
 }
 

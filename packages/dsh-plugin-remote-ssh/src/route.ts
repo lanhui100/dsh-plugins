@@ -474,11 +474,12 @@ export function registerRemoteSshRoute(
                 return { ...proj, values: vals }
               }
 
-              const namespacedWorkspaces = workspaceGroups.map((ws) => ({
-                ...ws,
-                workspaceId: namespaceRemoteWorkspaceId(host, ws.cwd),
-                name: readyCallers.length > 1 ? `[${host}] ${ws.name}` : ws.name,
-                sessions: ws.sessions.map((s) => {
+              const baselineItemByPath = baseline !== undefined
+                ? new Map(baseline.items.map((it) => [it.path, it]))
+                : undefined
+
+              const namespacedWorkspaces = workspaceGroups.map((ws) => {
+                const namespacedSessions = ws.sessions.map((s) => {
                   const pending = caller.getPendingInteractionsForSession(s.sessionId)
                   return {
                     ...s,
@@ -489,8 +490,39 @@ export function registerRemoteSshRoute(
                       ? (pending[0]?.event === 'user-questions/request' ? 'question' : true)
                       : false,
                   }
-                }),
-              }))
+                })
+
+                const baseItem = baselineItemByPath?.get(ws.cwd)
+                let resolvedSessionIds: string[]
+                if (baseItem && Array.isArray(baseItem.sessionIds)) {
+                  const seen = new Set<string>()
+                  resolvedSessionIds = []
+                  for (const id of baseItem.sessionIds) {
+                    const nsId = namespaceRemoteId(host, String(id))
+                    if (!seen.has(nsId)) {
+                      seen.add(nsId)
+                      resolvedSessionIds.push(nsId)
+                    }
+                  }
+                  for (const s of namespacedSessions) {
+                    const nsId = namespaceRemoteId(host, String(s.sessionId))
+                    if (!seen.has(nsId)) {
+                      seen.add(nsId)
+                      resolvedSessionIds.push(nsId)
+                    }
+                  }
+                } else {
+                  resolvedSessionIds = namespacedSessions.map((s) => namespaceRemoteId(host, String(s.sessionId)))
+                }
+
+                return {
+                  ...ws,
+                  workspaceId: namespaceRemoteWorkspaceId(host, ws.cwd),
+                  name: readyCallers.length > 1 ? `[${host}] ${ws.name}` : ws.name,
+                  sessionIds: resolvedSessionIds,
+                  sessions: namespacedSessions,
+                }
+              })
 
               const validSessions = (validMap !== undefined
                 ? items.filter((it) => validMap.has(it.cwd))
@@ -634,9 +666,12 @@ export function registerRemoteSshRoute(
             }
           })
 
-          const workspaces = workspaceGroups.map((ws) => ({
-            ...ws,
-            sessions: ws.sessions.map((it) => {
+          const baselineItemByPath = baseline !== undefined
+            ? new Map(baseline.items.map((it) => [it.path, it]))
+            : undefined
+
+          const workspaces = workspaceGroups.map((ws) => {
+            const namespacedSessions = ws.sessions.map((it) => {
               const pending = caller.getPendingInteractionsForSession(it.sessionId)
               return {
                 ...it,
@@ -647,8 +682,37 @@ export function registerRemoteSshRoute(
                   ? (pending[0]?.event === 'user-questions/request' ? 'question' : true)
                   : false,
               }
-            }),
-          }))
+            })
+
+            const baseItem = baselineItemByPath?.get(ws.cwd)
+            let resolvedSessionIds: string[]
+            if (baseItem && Array.isArray(baseItem.sessionIds)) {
+              const seen = new Set<string>()
+              resolvedSessionIds = []
+              for (const id of baseItem.sessionIds) {
+                const nsId = namespaceRemoteId(host, String(id))
+                if (!seen.has(nsId)) {
+                  seen.add(nsId)
+                  resolvedSessionIds.push(nsId)
+                }
+              }
+              for (const s of namespacedSessions) {
+                const nsId = namespaceRemoteId(host, String(s.sessionId))
+                if (!seen.has(nsId)) {
+                  seen.add(nsId)
+                  resolvedSessionIds.push(nsId)
+                }
+              }
+            } else {
+              resolvedSessionIds = namespacedSessions.map((s) => namespaceRemoteId(host, String(s.sessionId)))
+            }
+
+            return {
+              ...ws,
+              sessionIds: resolvedSessionIds,
+              sessions: namespacedSessions,
+            }
+          })
 
           for (const it of items) {
             if (it.origin === 'subagent' && it.parentSessionId) {

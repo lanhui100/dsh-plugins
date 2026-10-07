@@ -253,6 +253,7 @@ window.__ModuleLoader__.load({
           c: ws.cwd,
           n: ws.name,
           s: (ws.sessions || []).map((s) => (s && s.sessionId) || '').join(','),
+          m: Array.isArray(ws.sessionIds) ? ws.sessionIds.join(',') : '',
         })),
         s: (body.sessions || []).map((s) => ({
           i: s.sessionId,
@@ -741,8 +742,10 @@ window.__ModuleLoader__.load({
               if (h) activeHosts.add(h)
             }
           }
-          // Root workspace view only lists direct sessions (subagents excluded)
-          const sessionIds = (ws.sessions || []).map((s) => String(s.sessionId))
+          // Prioritize authoritative membership from host snapshot, falling back to display list
+          const sessionIds = Array.isArray(ws.sessionIds)
+            ? ws.sessionIds.map(String)
+            : (ws.sessions || []).map((s) => String(s.sessionId))
           const workspaceId = ws.workspaceId || `remote:${ws.cwd}`
           const cleanName = ws.name ? ws.name.replace(/^\[[^\]]+\]\s*/, '') : ''
           nextWorkspaceViews.set(workspaceId, {
@@ -818,6 +821,102 @@ window.__ModuleLoader__.load({
             const cur = activeInteractions.get(id)
             if (cur) handleInteractionCancel(cur.eventId, id)
           }
+        }
+
+        // C3: Populate exactly one representative archived session into each *:hostroot container view
+        // so the container group survives official archivedFilter === 'only' grouping.
+        const sessionSummaryById = new Map()
+        if (sessions) {
+          const liveStore = (sessions.list && typeof sessions.list.getSnapshot === 'function')
+            ? sessions.list.getSnapshot()
+            : null
+          const byId = (liveStore && liveStore.byId) || sessions.byId || {}
+          for (const [sid, summary] of Object.entries(byId)) {
+            if (summary) sessionSummaryById.set(String(sid), summary)
+          }
+        }
+        for (const s of nextSessions) {
+          if (s && s.id) {
+            sessionSummaryById.set(String(s.id), s)
+          }
+        }
+
+        const remoteArchivedList = Array.isArray(body.archivedSessionIds) ? body.archivedSessionIds.map(String) : []
+        for (const host of activeHosts) {
+          const hostRootId = `remote:${host}:hostroot`
+          const hostRootView = nextWorkspaceViews.get(hostRootId)
+          if (!hostRootView) continue
+
+          const hostPrefix = `remote:${encodeURIComponent(host)}:`
+          const hostArchivedIds = remoteArchivedList.filter((id) => id.startsWith(hostPrefix))
+
+          const candidates = []
+          for (const sid of hostArchivedIds) {
+            const summary = sessionSummaryById.get(sid)
+            if (!summary) continue
+            if (summary.origin === 'subagent') continue
+            if (summary.blank === true) continue
+            candidates.push(summary)
+          }
+
+          candidates.sort((a, b) => (Number(b.updatedAt) || 0) - (Number(a.updatedAt) || 0))
+
+          const siblingViews = []
+          const siblingSessionIds = new Set()
+          for (const [wid, view] of nextWorkspaceViews.entries()) {
+            if (wid !== hostRootId && wid.startsWith(hostPrefix)) {
+              siblingViews.push(view)
+              if (Array.isArray(view.sessionIds)) {
+                for (const id of view.sessionIds) siblingSessionIds.add(id)
+              }
+            }
+          }
+
+          let rep = candidates.find((c) => !siblingSessionIds.has(String(c.id || c.sessionId)))
+          if (!rep && candidates.length > 0) {
+            rep = candidates[0]
+            const repId = String(rep.id || rep.sessionId)
+            for (const view of siblingViews) {
+              if (Array.isArray(view.sessionIds) && view.sessionIds.includes(repId)) {
+                view.sessionIds = view.sessionIds.filter((id) => id !== repId)
+              }
+            }
+          }
+
+          hostRootView.sessionIds = rep ? [String(rep.id || rep.sessionId)] : []
+        }
+
+        const localHostRootView = nextWorkspaceViews.get('local:hostroot')
+        if (localHostRootView) {
+          const officialArchived = (workspaces && Array.isArray(workspaces.archivedSessionIds))
+            ? workspaces.archivedSessionIds.map(String)
+            : []
+          const localArchived = officialArchived.filter((id) => !isRemoteStateId(id))
+
+          const candidates = []
+          for (const sid of localArchived) {
+            const summary = sessionSummaryById.get(sid)
+            if (!summary) continue
+            if (summary.origin === 'subagent') continue
+            if (summary.blank === true) continue
+            candidates.push(summary)
+          }
+
+          candidates.sort((a, b) => (Number(b.updatedAt) || 0) - (Number(a.updatedAt) || 0))
+
+          const localWsSessionIds = new Set()
+          for (const item of localWorkspaces) {
+            if (Array.isArray(item.sessionIds)) {
+              for (const id of item.sessionIds) localWsSessionIds.add(String(id))
+            }
+          }
+
+          let rep = candidates.find((c) => !localWsSessionIds.has(String(c.id || c.sessionId)))
+          if (!rep && candidates.length > 0) {
+            rep = candidates[0]
+          }
+
+          localHostRootView.sessionIds = rep ? [String(rep.id || rep.sessionId)] : []
         }
 
         cachedWorkspaceViews = [...nextWorkspaceViews.values()]

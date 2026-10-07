@@ -86,6 +86,8 @@ export interface RemoteWorkspaceGroup {
   readonly name: string
   /** Remote authoritative workspace ID if known from baseline. */
   readonly workspaceId?: string
+  /** Authoritative namespaced session IDs belonging to this workspace. */
+  readonly sessionIds?: readonly string[]
   /** Sessions in this directory, most recently active first. */
   readonly sessions: readonly RemoteSessionItem[]
   /** Total sessions in this directory before any display cap. */
