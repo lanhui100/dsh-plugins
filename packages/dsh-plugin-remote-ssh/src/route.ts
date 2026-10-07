@@ -505,14 +505,14 @@ export function registerRemoteSshRoute(
                     }
                   }
                   for (const s of namespacedSessions) {
-                    const nsId = namespaceRemoteId(host, String(s.sessionId))
+                    const nsId = String(s.sessionId)
                     if (!seen.has(nsId)) {
                       seen.add(nsId)
                       resolvedSessionIds.push(nsId)
                     }
                   }
                 } else {
-                  resolvedSessionIds = namespacedSessions.map((s) => namespaceRemoteId(host, String(s.sessionId)))
+                  resolvedSessionIds = namespacedSessions.map((s) => String(s.sessionId))
                 }
 
                 return {
@@ -697,14 +697,14 @@ export function registerRemoteSshRoute(
                 }
               }
               for (const s of namespacedSessions) {
-                const nsId = namespaceRemoteId(host, String(s.sessionId))
+                const nsId = String(s.sessionId)
                 if (!seen.has(nsId)) {
                   seen.add(nsId)
                   resolvedSessionIds.push(nsId)
                 }
               }
             } else {
-              resolvedSessionIds = namespacedSessions.map((s) => namespaceRemoteId(host, String(s.sessionId)))
+              resolvedSessionIds = namespacedSessions.map((s) => String(s.sessionId))
             }
 
             return {
