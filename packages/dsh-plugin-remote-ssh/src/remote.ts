@@ -27,7 +27,27 @@ const TOKEN_PATTERN = /\?token=([A-Za-z0-9_-]+)/
 interface RpcEnvelope {
   readonly type: string
   readonly rpcId: string
-  readonly result?: { readonly ok: boolean; readonly value?: unknown; readonly error?: { readonly code: string; readonly message: string } }
+  readonly result?: {
+    readonly ok: boolean
+    readonly value?: unknown
+    readonly error?: {
+      readonly code: string
+      readonly message: string
+      readonly details?: unknown
+    }
+  }
+}
+
+export class RemoteInvocationError extends Error {
+  readonly code: string
+  readonly details: unknown
+
+  constructor(code: string, message: string, details?: unknown) {
+    super(message)
+    this.name = 'RemoteInvocationError'
+    this.code = code
+    this.details = details
+  }
 }
 
 function runSsh(host: string, remoteScript: string): Promise<string> {
@@ -50,7 +70,7 @@ function runSsh(host: string, remoteScript: string): Promise<string> {
  * The token is process-scoped and rotates on every remote restart.
  */
 export async function readLaunchToken(host: string, logPath: string = DEFAULT_LOG_PATH): Promise<string> {
-  const script = `grep -o "?token=[A-Za-z0-9_-]*" ${logPath} | head -1`
+  const script = `grep -o "?token=[A-Za-z0-9_-]*" ${logPath} | tail -1`
   const output = await runSsh(host, script)
   const match = TOKEN_PATTERN.exec(output.trim())
   if (match?.[1] === undefined) {
@@ -172,6 +192,13 @@ export class RemoteCaller {
     const result = envelope.result
     if (result === undefined || result.ok !== true) {
       const detail = result?.error
+      if (detail?.code !== undefined) {
+        throw new RemoteInvocationError(
+          detail.code,
+          detail.message ?? `remote-ssh: ${endpoint} failed (${detail.code})`,
+          detail.details,
+        )
+      }
       throw new Error(`remote-ssh: ${endpoint} failed (${detail?.code ?? 'unknown'}): ${detail?.message ?? 'no message'}`)
     }
     return result.value as T
@@ -215,6 +242,21 @@ export class RemoteCaller {
       return this.cachedBaseline.data
     }
 
+    try {
+      return await this.fetchWorkspaceBaselineInternal(signal)
+    } catch (err) {
+      // If websocket connection or protocol handshake fails, clear cookie and retry once
+      // to heal from remote process restart token/cookie rotation
+      this.jar.clear()
+      try {
+        return await this.fetchWorkspaceBaselineInternal(signal)
+      } catch {
+        throw err
+      }
+    }
+  }
+
+  private async fetchWorkspaceBaselineInternal(signal?: AbortSignal): Promise<RemoteWorkspaceBaseline> {
     await this.ensureCookie()
     const cookie = this.jar.header()
     const wsUrl = `${this.options.baseUrl.replace(/^http/, 'ws')}/api/remote.mux`
@@ -508,6 +550,7 @@ export class RemoteCaller {
   onTunnelReady(): void {
     this.tunnelPaused = false
     this.eventsFailures = 0
+    this.clearBaselineCache()
     if (this.eventsReconnectTimer !== undefined) {
       clearTimeout(this.eventsReconnectTimer)
       this.eventsReconnectTimer = undefined
@@ -524,6 +567,7 @@ export class RemoteCaller {
   onTunnelDown(): void {
     this.tunnelPaused = true
     this.eventsConnecting = undefined
+    this.clearBaselineCache()
     if (this.eventsReconnectTimer !== undefined) {
       clearTimeout(this.eventsReconnectTimer)
       this.eventsReconnectTimer = undefined

@@ -118,4 +118,31 @@ console.log('Testing SSH keepalive hardening and $events auto-reconnect...')
   assert.ok(elapsedMs < 1000, `dispose must complete promptly, took ${elapsedMs}ms`)
 }
 
+// 6. Verify RemoteCaller invalidates baseline cache on tunnel down/up
+{
+  const caller = new RemoteCaller({
+    host: 'mock-host',
+    baseUrl: 'http://127.0.0.1:39999',
+  })
+
+  // Populate mock baseline cache
+  caller.cachedBaseline = {
+    data: { items: [], archivedSessionIds: [], pinnedSessionIds: [] },
+    expiresAt: Date.now() + 60000,
+  }
+  assert.ok(caller.cachedBaseline !== undefined, 'cachedBaseline should be populated')
+
+  caller.onTunnelDown()
+  assert.equal(caller.cachedBaseline, undefined, 'onTunnelDown must clear baseline cache')
+
+  caller.cachedBaseline = {
+    data: { items: [], archivedSessionIds: [], pinnedSessionIds: [] },
+    expiresAt: Date.now() + 60000,
+  }
+  caller.onTunnelReady()
+  assert.equal(caller.cachedBaseline, undefined, 'onTunnelReady must clear baseline cache')
+
+  caller.dispose()
+}
+
 console.log('all smoke-keepalive assertions passed cleanly!')
